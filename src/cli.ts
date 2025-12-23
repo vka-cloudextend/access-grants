@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { config } from 'dotenv';
 import { AzureClient } from './clients/azure-client';
 import { AWSClient } from './clients/aws-client';
 import { AssignmentOrchestrator, OrchestrationConfig, AccessGrantRequest } from './orchestrator';
-
-// Load environment variables
-config();
+import { configManager, validateConfig } from './config';
+import { ErrorHandler, ValidationUtils } from './errors';
 
 const program = new Command();
 
@@ -16,47 +14,45 @@ program
     .description( 'AWS Access Grants - CLI tool for managing Azure AD security groups within AWS IAM Identity Center integration' )
     .version( '1.0.0' );
 
-// Configuration helper
+// Configuration helper with comprehensive validation
 function getConfig(): OrchestrationConfig {
-    const requiredEnvVars = [
-        'AZURE_TENANT_ID',
-        'AZURE_CLIENT_ID',
-        'AZURE_CLIENT_SECRET',
-        'AZURE_ENTERPRISE_APP_ID',
-        'AWS_REGION',
-        'AWS_IDENTITY_CENTER_INSTANCE_ARN',
-        'AWS_IDENTITY_STORE_ID',
-        'AWS_ACCOUNT_DEV',
-        'AWS_ACCOUNT_QA',
-        'AWS_ACCOUNT_STAGING',
-        'AWS_ACCOUNT_PROD'
-    ];
+    // Validate configuration
+    const validation = validateConfig();
 
-    for ( const envVar of requiredEnvVars ) {
-        if ( !process.env[ envVar ] ) {
-            console.error( `Error: Missing required environment variable: ${envVar}` );
-            process.exit( 1 );
+    if ( !validation.isValid ) {
+        console.error( 'Configuration validation failed:' );
+        validation.errors.forEach( error => {
+            console.error( `  - ${error}` );
+        } );
+
+        if ( validation.warnings.length > 0 ) {
+            console.warn( '\nWarnings:' );
+            validation.warnings.forEach( warning => {
+                console.warn( `  - ${warning}` );
+            } );
         }
+
+        console.error( '\nPlease check your environment variables or configuration files.' );
+        console.error( 'Use "aws-ag config --template" to generate a configuration template.' );
+        process.exit( 1 );
     }
 
+    // Show warnings if any
+    if ( validation.warnings.length > 0 ) {
+        console.warn( 'Configuration warnings:' );
+        validation.warnings.forEach( warning => {
+            console.warn( `  - ${warning}` );
+        } );
+        console.warn( '' );
+    }
+
+    const config = configManager.getConfig();
+
     return {
-        azure: {
-            tenantId: process.env.AZURE_TENANT_ID!,
-            clientId: process.env.AZURE_CLIENT_ID!,
-            clientSecret: process.env.AZURE_CLIENT_SECRET!,
-            enterpriseApplicationId: process.env.AZURE_ENTERPRISE_APP_ID!
-        },
-        aws: {
-            region: process.env.AWS_REGION!,
-            identityCenterInstanceArn: process.env.AWS_IDENTITY_CENTER_INSTANCE_ARN!,
-            identityStoreId: process.env.AWS_IDENTITY_STORE_ID!,
-            accountMapping: {
-                Dev: process.env.AWS_ACCOUNT_DEV!,
-                QA: process.env.AWS_ACCOUNT_QA!,
-                Staging: process.env.AWS_ACCOUNT_STAGING!,
-                Prod: process.env.AWS_ACCOUNT_PROD!
-            }
-        }
+        azure: config.azure,
+        aws: config.aws,
+        retryAttempts: config.retry.maxAttempts,
+        retryDelayMs: config.retry.baseDelayMs
     };
 }
 
@@ -77,6 +73,82 @@ function createAWSClient(): AWSClient {
     const config = getConfig();
     return new AWSClient( config.aws );
 }
+
+// config command - Configuration management
+program
+    .command( 'config' )
+    .description( 'Configuration management' )
+    .option( '--validate', 'Validate current configuration' )
+    .option( '--show', 'Show current configuration (masked)' )
+    .option( '--sources', 'Show configuration sources' )
+    .option( '--template', 'Generate configuration template' )
+    .option( '--env-template', 'Generate environment variables template' )
+    .action( async ( options ) => {
+        try {
+            if ( options.template ) {
+                console.log( 'Configuration template (config.json):' );
+                console.log( '=====================================' );
+                console.log( configManager.createConfigTemplate() );
+                return;
+            }
+
+            if ( options.envTemplate ) {
+                console.log( 'Environment variables template (.env):' );
+                console.log( '=====================================' );
+                console.log( configManager.createEnvTemplate() );
+                return;
+            }
+
+            if ( options.sources ) {
+                console.log( 'Configuration sources (in priority order):' );
+                console.log( '=========================================' );
+                const sources = configManager.getConfigSources();
+                sources.forEach( ( source, index ) => {
+                    console.log( `${index + 1}. ${source}` );
+                } );
+                return;
+            }
+
+            if ( options.show ) {
+                console.log( 'Current configuration (sensitive values masked):' );
+                console.log( '===============================================' );
+                console.log( JSON.stringify( configManager.getMaskedConfig(), null, 2 ) );
+                return;
+            }
+
+            // Default: validate configuration
+            const validation = validateConfig();
+
+            console.log( 'Configuration Validation:' );
+            console.log( '========================' );
+            console.log( `Status: ${validation.isValid ? '✅ Valid' : '❌ Invalid'}` );
+
+            if ( validation.errors.length > 0 ) {
+                console.log( '\nErrors:' );
+                validation.errors.forEach( error => {
+                    console.log( `  ❌ ${error}` );
+                } );
+            }
+
+            if ( validation.warnings.length > 0 ) {
+                console.log( '\nWarnings:' );
+                validation.warnings.forEach( warning => {
+                    console.log( `  ⚠️  ${warning}` );
+                } );
+            }
+
+            if ( validation.isValid ) {
+                console.log( '\n✅ Configuration is valid and ready to use!' );
+            } else {
+                console.log( '\n❌ Please fix the configuration errors before using the tool.' );
+                console.log( 'Use "aws-ag config --template" to generate a configuration template.' );
+                process.exit( 1 );
+            }
+
+        } catch ( error ) {
+            ErrorHandler.handleError( error, 'Configuration management' );
+        }
+    } );
 
 // discover-groups command - List and filter Azure AD groups
 program
@@ -123,8 +195,7 @@ program
                 console.log( `\nTotal: ${filteredGroups.length} groups` );
             }
         } catch ( error ) {
-            console.error( 'Error discovering groups:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Discovering groups' );
         }
     } );
 
@@ -173,8 +244,7 @@ program
                 console.log( `\nTotal: ${permissionSets.length} permission sets` );
             }
         } catch ( error ) {
-            console.error( 'Error listing permission sets:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Listing permission sets' );
         }
     } );
 
@@ -223,8 +293,7 @@ program
                 process.exit( 1 );
             }
         } catch ( error ) {
-            console.error( 'Error assigning group:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Assigning group' );
         }
     } );
 
@@ -276,8 +345,7 @@ program
                 process.exit( 1 );
             }
         } catch ( error ) {
-            console.error( 'Error in bulk assignment:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Bulk assignment' );
         }
     } );
 
@@ -321,8 +389,7 @@ program
                 console.log( `\nTotal: ${assignments.length} assignments` );
             }
         } catch ( error ) {
-            console.error( 'Error listing assignments:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Listing assignments' );
         }
     } );
 
@@ -405,8 +472,7 @@ program
                 }
             }
         } catch ( error ) {
-            console.error( 'Error validating assignments:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Validating assignments' );
         }
     } );
 
@@ -456,8 +522,7 @@ program
                 console.log( output );
             }
         } catch ( error ) {
-            console.error( 'Error exporting configuration:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Exporting configuration' );
         }
     } );
 
@@ -511,8 +576,7 @@ program
             console.log( 'Rollback completed successfully' );
 
         } catch ( error ) {
-            console.error( 'Error performing rollback:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Performing rollback' );
         }
     } );
 
@@ -528,25 +592,11 @@ program
             const groupName = options.groupName;
 
             // Validate group name format
+            ValidationUtils.validateGroupName( groupName );
+
             const nameParts = groupName.split( '-' );
-            if ( nameParts.length !== 4 || nameParts[ 0 ] !== 'CE' || nameParts[ 1 ] !== 'AWS' ) {
-                console.error( `Error: Group name must follow format CE-AWS-<Account>-<TicketId>` );
-                console.error( `Provided: ${groupName}` );
-                process.exit( 1 );
-            }
-
             const accountType = nameParts[ 2 ];
-            const ticketId = nameParts[ 3 ];
-
-            if ( ![ 'Dev', 'QA', 'Staging', 'Prod' ].includes( accountType ) ) {
-                console.error( `Error: Invalid account type '${accountType}'. Must be one of: Dev, QA, Staging, Prod` );
-                process.exit( 1 );
-            }
-
-            if ( !/^AG-\d{3,4}$/.test( ticketId ) ) {
-                console.error( `Error: Invalid ticket ID '${ticketId}'. Must be in format AG-XXX or AG-XXXX` );
-                process.exit( 1 );
-            }
+            const ticketId = `${nameParts[ 3 ]}-${nameParts[ 4 ]}`;
 
             console.log( `Validating access grant: ${groupName}` );
             console.log( '=======================================' );
@@ -675,8 +725,7 @@ program
             }
 
         } catch ( error ) {
-            console.error( 'Error validating access grant:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Validating access grant' );
         }
     } );
 
@@ -693,10 +742,7 @@ program
 
             if ( options.accountType ) {
                 accountType = options.accountType as 'Dev' | 'QA' | 'Staging' | 'Prod';
-                if ( ![ 'Dev', 'QA', 'Staging', 'Prod' ].includes( accountType ) ) {
-                    console.error( 'Error: Account type must be one of: Dev, QA, Staging, Prod' );
-                    process.exit( 1 );
-                }
+                ValidationUtils.validateAccountType( accountType );
             }
 
             const orchestrator = createOrchestrator();
@@ -774,8 +820,7 @@ program
             }
 
         } catch ( error ) {
-            console.error( 'Error listing access grants:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Listing access grants' );
         }
     } );
 
@@ -797,27 +842,16 @@ program
         try {
             // Parse and validate inputs
             const accountType = options.accountType as 'Dev' | 'QA' | 'Staging' | 'Prod';
-            if ( ![ 'Dev', 'QA', 'Staging', 'Prod' ].includes( accountType ) ) {
-                console.error( 'Error: Account type must be one of: Dev, QA, Staging, Prod' );
-                process.exit( 1 );
-            }
-
-            if ( !/^AG-\d{3,4}$/.test( options.ticketId ) ) {
-                console.error( 'Error: Ticket ID must be in format AG-XXX or AG-XXXX' );
-                process.exit( 1 );
-            }
+            ValidationUtils.validateAccountType( accountType );
+            ValidationUtils.validateTicketId( options.ticketId );
 
             const owners = options.owners.split( ',' ).map( ( email: string ) => email.trim() );
             const members = options.members.split( ',' ).map( ( email: string ) => email.trim() );
 
             // Validate email formats
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             const allEmails = [ ...owners, ...members ];
             for ( const email of allEmails ) {
-                if ( !emailRegex.test( email ) ) {
-                    console.error( `Error: Invalid email format: ${email}` );
-                    process.exit( 1 );
-                }
+                ValidationUtils.validateEmail( email );
             }
 
             // Build access grant request
@@ -931,8 +965,7 @@ program
             console.log( `3. Use 'aws-ag validate-access ${groupName}' to check status` );
 
         } catch ( error ) {
-            console.error( 'Error creating access grant:', error instanceof Error ? error.message : 'Unknown error' );
-            process.exit( 1 );
+            ErrorHandler.handleError( error, 'Creating access grant' );
         }
     } );
 

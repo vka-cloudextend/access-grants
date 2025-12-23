@@ -55,20 +55,3 @@ export interface OperationError {
     details?: Record<string, unknown>;
     timestamp: Date;
 }
-
-export interface ToolConfig {
-    azure: {
-        tenantId: string;
-        clientId: string;
-        clientSecret: string;
-    };
-    aws: {
-        region: string;
-        identityCenterInstanceArn: string;
-        identityStoreId: string;
-    };
-    logging: {
-        level: 'debug' | 'info' | 'warn' | 'error';
-        file?: string;
-    };
-}
