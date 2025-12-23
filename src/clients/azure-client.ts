@@ -25,10 +25,20 @@ interface GroupMember {
     '@odata.type'?: string;
 }
 
+interface GraphUser {
+    id?: string;
+    displayName?: string;
+    userPrincipalName?: string;
+    mail?: string;
+    accountEnabled?: boolean;
+    deletedDateTime?: string;
+}
+
 export class AzureClient {
     private graphClient: Client;
     private config: AzureConfig;
     private msalClient: ConfidentialClientApplication;
+    private awsClient?: any; // Optional AWS client for cross-reference functionality
 
     constructor( config: AzureConfig ) {
         this.config = config;
@@ -59,6 +69,14 @@ export class AzureClient {
                 }
             }
         } );
+    }
+
+    /**
+     * Set AWS client for enhanced cross-reference functionality
+     * This allows the Azure client to perform more accurate AWS assignment checks
+     */
+    setAWSClient( awsClient: any ): void {
+        this.awsClient = awsClient;
     }
 
     /**
@@ -258,13 +276,104 @@ export class AzureClient {
     /**
      * Check if a group is already assigned to AWS
      * Implements Requirements 1.2: Check if groups are already configured in AWS IAM Identity Center
-     * Note: This is a placeholder that will be implemented when AWS client is available
      */
     async isGroupAssignedToAWS( groupId: string ): Promise<boolean> {
-        // TODO: Implement AWS cross-reference when AWS client is available in task 3
-        // This should check if the group is already assigned to any AWS accounts/permission sets
-        console.warn( `AWS cross-reference not yet implemented for group ${groupId}` );
-        return false;
+        try {
+            // Use enhanced check if AWS client is available
+            if ( this.awsClient ) {
+                const result = await this.isGroupAssignedToAWSWithClient( groupId, this.awsClient );
+                return result.isAssigned;
+            }
+
+            // Fall back to basic enterprise app assignment check
+            const response = await this.graphClient
+                .api( `/groups/${groupId}/appRoleAssignments` )
+                .get();
+
+            const assignments = response.value || [];
+
+            // Look for assignments that might be AWS-related
+            // This is a heuristic approach until we have full AWS integration
+            for ( const assignment of assignments ) {
+                if ( assignment.resourceDisplayName &&
+                    ( assignment.resourceDisplayName.toLowerCase().includes( 'aws' ) ||
+                        assignment.resourceDisplayName.toLowerCase().includes( 'identity center' ) ||
+                        assignment.resourceDisplayName.toLowerCase().includes( 'sso' ) ) ) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch ( error ) {
+            // If we can't check assignments, assume not assigned to be safe
+            console.warn( `Failed to check AWS assignment status for group ${groupId}: ${error instanceof Error ? error.message : 'Unknown error'}` );
+            return false;
+        }
+    }
+
+    /**
+     * Enhanced AWS cross-reference check using AWS client
+     * This method should be called when AWS client is available for more accurate checking
+     */
+    async isGroupAssignedToAWSWithClient( groupId: string, awsClient?: any ): Promise<{
+        isAssigned: boolean;
+        assignments: Array<{
+            accountId: string;
+            permissionSetArn: string;
+            status: string;
+        }>;
+        syncStatus: {
+            isSynced: boolean;
+            awsGroupId?: string;
+        };
+    }> {
+        const result = {
+            isAssigned: false,
+            assignments: [] as Array<{
+                accountId: string;
+                permissionSetArn: string;
+                status: string;
+            }>,
+            syncStatus: {
+                isSynced: false,
+                awsGroupId: undefined as string | undefined
+            }
+        };
+
+        try {
+            if ( !awsClient ) {
+                // Fall back to basic check
+                result.isAssigned = await this.isGroupAssignedToAWS( groupId );
+                return result;
+            }
+
+            // Check if group is synced to AWS Identity Store
+            const syncStatus = await awsClient.checkGroupSynchronizationStatus( groupId );
+            result.syncStatus = syncStatus;
+
+            if ( syncStatus.isSynced && syncStatus.awsGroupId ) {
+                // Get all account assignments for this group
+                const allAssignments = await awsClient.listAccountAssignments();
+                const groupAssignments = allAssignments.filter( ( assignment: any ) =>
+                    assignment.principalId === syncStatus.awsGroupId || assignment.principalId === groupId
+                );
+
+                result.assignments = groupAssignments.map( ( assignment: any ) => ( {
+                    accountId: assignment.accountId,
+                    permissionSetArn: assignment.permissionSetArn,
+                    status: assignment.status
+                } ) );
+
+                result.isAssigned = result.assignments.length > 0;
+            }
+
+        } catch ( error ) {
+            console.warn( `Failed to perform enhanced AWS cross-reference for group ${groupId}: ${error instanceof Error ? error.message : 'Unknown error'}` );
+            // Fall back to basic check
+            result.isAssigned = await this.isGroupAssignedToAWS( groupId );
+        }
+
+        return result;
     }
 
     /**
@@ -340,6 +449,152 @@ export class AzureClient {
     }
 
     /**
+     * Validate if a user exists in Azure AD and is active
+     * Implements Requirements 1.3: Validate email addresses and user status
+     */
+    async validateUser( emailOrId: string ): Promise<{
+        isValid: boolean;
+        exists: boolean;
+        isActive: boolean;
+        user?: {
+            id: string;
+            displayName: string;
+            userPrincipalName: string;
+            mail?: string;
+        };
+        errors: string[];
+    }> {
+        const result = {
+            isValid: false,
+            exists: false,
+            isActive: false,
+            user: undefined as any,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate email format if it looks like an email
+            if ( emailOrId.includes( '@' ) && !this.isValidEmail( emailOrId ) ) {
+                result.errors.push( 'Invalid email address format' );
+                return result;
+            }
+
+            // Try to find user by email or ID
+            let user: GraphUser | null = null;
+
+            if ( emailOrId.includes( '@' ) ) {
+                // Search by email/userPrincipalName
+                user = await this.getUserByEmail( emailOrId );
+            } else {
+                // Search by ID
+                user = await this.getUserById( emailOrId );
+            }
+
+            if ( !user ) {
+                result.errors.push( 'User not found in Azure AD' );
+                return result;
+            }
+
+            result.exists = true;
+
+            // Check if user is active (not deleted and account enabled)
+            result.isActive = user.accountEnabled === true && !user.deletedDateTime;
+            if ( !result.isActive ) {
+                if ( user.deletedDateTime ) {
+                    result.errors.push( 'User account is deleted' );
+                }
+                if ( user.accountEnabled === false ) {
+                    result.errors.push( 'User account is disabled' );
+                }
+            }
+
+            // Set user details if valid
+            if ( user.id && user.displayName && user.userPrincipalName ) {
+                result.user = {
+                    id: user.id,
+                    displayName: user.displayName,
+                    userPrincipalName: user.userPrincipalName,
+                    mail: user.mail
+                };
+            }
+
+            result.isValid = result.exists && result.isActive && !!result.user;
+
+        } catch ( error ) {
+            result.errors.push( `User validation failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Get user by email address or userPrincipalName
+     */
+    private async getUserByEmail( email: string ): Promise<GraphUser | null> {
+        try {
+            const response = await this.graphClient
+                .api( '/users' )
+                .filter( `mail eq '${email}' or userPrincipalName eq '${email}'` )
+                .select( 'id,displayName,userPrincipalName,mail,accountEnabled,deletedDateTime' )
+                .get();
+
+            const users = response.value || [];
+            return users.length > 0 ? users[ 0 ] : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Get user by ID
+     */
+    private async getUserById( userId: string ): Promise<GraphUser | null> {
+        try {
+            const response = await this.graphClient
+                .api( `/users/${userId}` )
+                .select( 'id,displayName,userPrincipalName,mail,accountEnabled,deletedDateTime' )
+                .get();
+
+            return response;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Validate email address format
+     */
+    private isValidEmail( email: string ): boolean {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test( email );
+    }
+
+    /**
+     * Batch validate multiple users
+     */
+    async validateUsers( emailsOrIds: string[] ): Promise<Map<string, boolean>> {
+        const results = new Map<string, boolean>();
+
+        // Process users in parallel for better performance
+        const validationPromises = emailsOrIds.map( async ( emailOrId ) => {
+            try {
+                const validation = await this.validateUser( emailOrId );
+                return { emailOrId, isValid: validation.isValid };
+            } catch {
+                return { emailOrId, isValid: false };
+            }
+        } );
+
+        const validationResults = await Promise.all( validationPromises );
+
+        for ( const { emailOrId, isValid } of validationResults ) {
+            results.set( emailOrId, isValid );
+        }
+
+        return results;
+    }
+
+    /**
      * Batch validate multiple groups
      */
     async validateGroups( groupIds: string[] ): Promise<Map<string, boolean>> {
@@ -362,5 +617,466 @@ export class AzureClient {
         }
 
         return results;
+    }
+
+    /**
+     * Create a new Azure AD security group
+     * Implements Requirements 1.1: Create Azure AD security groups
+     */
+    async createSecurityGroup( displayName: string, description?: string, mailNickname?: string ): Promise<{
+        success: boolean;
+        groupId?: string;
+        group?: {
+            id: string;
+            displayName: string;
+            description?: string;
+            mailNickname: string;
+        };
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            groupId: undefined as string | undefined,
+            group: undefined as any,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate input
+            if ( !displayName || displayName.trim().length === 0 ) {
+                result.errors.push( 'Display name is required' );
+                return result;
+            }
+
+            // Generate mail nickname if not provided
+            const generatedMailNickname = mailNickname || this.generateMailNickname( displayName );
+
+            // Create the group
+            const groupData = {
+                displayName: displayName.trim(),
+                description: description?.trim(),
+                mailNickname: generatedMailNickname,
+                securityEnabled: true,
+                mailEnabled: false,
+                groupTypes: [] // Empty array for security groups
+            };
+
+            const response = await this.graphClient
+                .api( '/groups' )
+                .post( groupData );
+
+            if ( response && response.id ) {
+                result.success = true;
+                result.groupId = response.id;
+                result.group = {
+                    id: response.id,
+                    displayName: response.displayName,
+                    description: response.description,
+                    mailNickname: response.mailNickname
+                };
+            } else {
+                result.errors.push( 'Group creation failed - no group ID returned' );
+            }
+
+        } catch ( error ) {
+            result.errors.push( `Group creation failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Add an owner to an Azure AD group
+     * Implements Requirements 1.1: Manage group ownership
+     */
+    async addGroupOwner( groupId: string, userIdOrEmail: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate user exists first
+            const userValidation = await this.validateUser( userIdOrEmail );
+            if ( !userValidation.isValid || !userValidation.user ) {
+                result.errors.push( `User validation failed: ${userValidation.errors.join( ', ' )}` );
+                return result;
+            }
+
+            // Add user as owner
+            const ownerData = {
+                '@odata.id': `https://graph.microsoft.com/v1.0/users/${userValidation.user.id}`
+            };
+
+            await this.graphClient
+                .api( `/groups/${groupId}/owners/$ref` )
+                .post( ownerData );
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to add group owner: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Add a member to an Azure AD group
+     * Implements Requirements 1.1: Manage group membership
+     */
+    async addGroupMember( groupId: string, userIdOrEmail: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate user exists first
+            const userValidation = await this.validateUser( userIdOrEmail );
+            if ( !userValidation.isValid || !userValidation.user ) {
+                result.errors.push( `User validation failed: ${userValidation.errors.join( ', ' )}` );
+                return result;
+            }
+
+            // Add user as member
+            const memberData = {
+                '@odata.id': `https://graph.microsoft.com/v1.0/users/${userValidation.user.id}`
+            };
+
+            await this.graphClient
+                .api( `/groups/${groupId}/members/$ref` )
+                .post( memberData );
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to add group member: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Add multiple members to a group in batch
+     */
+    async addGroupMembers( groupId: string, userIdsOrEmails: string[] ): Promise<{
+        success: boolean;
+        successfulAdditions: string[];
+        failedAdditions: { user: string; error: string }[];
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            successfulAdditions: [] as string[],
+            failedAdditions: [] as { user: string; error: string }[],
+            errors: [] as string[]
+        };
+
+        try {
+            // Process members in parallel for better performance
+            const memberPromises = userIdsOrEmails.map( async ( userIdOrEmail ) => {
+                try {
+                    const addResult = await this.addGroupMember( groupId, userIdOrEmail );
+                    return { userIdOrEmail, success: addResult.success, errors: addResult.errors };
+                } catch ( error ) {
+                    return {
+                        userIdOrEmail,
+                        success: false,
+                        errors: [ error instanceof Error ? error.message : 'Unknown error' ]
+                    };
+                }
+            } );
+
+            const memberResults = await Promise.all( memberPromises );
+
+            for ( const memberResult of memberResults ) {
+                if ( memberResult.success ) {
+                    result.successfulAdditions.push( memberResult.userIdOrEmail );
+                } else {
+                    result.failedAdditions.push( {
+                        user: memberResult.userIdOrEmail,
+                        error: memberResult.errors.join( ', ' )
+                    } );
+                }
+            }
+
+            result.success = result.successfulAdditions.length > 0;
+
+        } catch ( error ) {
+            result.errors.push( `Batch member addition failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Generate a mail nickname from display name
+     */
+    private generateMailNickname( displayName: string ): string {
+        // Remove special characters and spaces, convert to lowercase
+        return displayName
+            .toLowerCase()
+            .replace( /[^a-z0-9]/g, '' )
+            .substring( 0, 64 ); // Azure AD limit for mail nickname
+    }
+
+    /**
+     * Assign a group to an enterprise application
+     * Implements Requirements 1.2: Enterprise application integration
+     */
+    async assignGroupToEnterpriseApp( groupId: string, enterpriseAppId: string, roleId?: string ): Promise<{
+        success: boolean;
+        assignmentId?: string;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            assignmentId: undefined as string | undefined,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate group exists first
+            const groupExists = await this.groupExists( groupId );
+            if ( !groupExists ) {
+                result.errors.push( 'Group does not exist or is not accessible' );
+                return result;
+            }
+
+            // Get default role if not specified
+            let appRoleId = roleId;
+            if ( !appRoleId ) {
+                const defaultRole = await this.getDefaultAppRole( enterpriseAppId );
+                if ( !defaultRole ) {
+                    result.errors.push( 'No default role found for enterprise application' );
+                    return result;
+                }
+                appRoleId = defaultRole.id;
+            }
+
+            // Create the app role assignment
+            const assignmentData = {
+                principalId: groupId,
+                resourceId: enterpriseAppId,
+                appRoleId: appRoleId
+            };
+
+            const response = await this.graphClient
+                .api( `/groups/${groupId}/appRoleAssignments` )
+                .post( assignmentData );
+
+            if ( response && response.id ) {
+                result.success = true;
+                result.assignmentId = response.id;
+            } else {
+                result.errors.push( 'Enterprise app assignment failed - no assignment ID returned' );
+            }
+
+        } catch ( error ) {
+            result.errors.push( `Failed to assign group to enterprise app: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Trigger on-demand provisioning for a group
+     * Implements Requirements 1.3: Provisioning management
+     */
+    async triggerProvisionOnDemand( groupId: string, enterpriseAppId: string ): Promise<{
+        success: boolean;
+        provisioningJobId?: string;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            provisioningJobId: undefined as string | undefined,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate group exists first
+            const groupExists = await this.groupExists( groupId );
+            if ( !groupExists ) {
+                result.errors.push( 'Group does not exist or is not accessible' );
+                return result;
+            }
+
+            // Trigger provisioning on demand
+            const provisioningData = {
+                parameters: [
+                    {
+                        subjects: [
+                            {
+                                objectId: groupId,
+                                objectTypeName: 'Group'
+                            }
+                        ],
+                        ruleId: 'CreateGroup'
+                    }
+                ]
+            };
+
+            const response = await this.graphClient
+                .api( `/servicePrincipals/${enterpriseAppId}/synchronization/jobs/{jobId}/provisionOnDemand` )
+                .post( provisioningData );
+
+            if ( response ) {
+                result.success = true;
+                result.provisioningJobId = response.id || 'unknown';
+            } else {
+                result.errors.push( 'Provisioning trigger failed - no response received' );
+            }
+
+        } catch ( error ) {
+            // On-demand provisioning might not be available for all apps
+            result.errors.push( `Failed to trigger on-demand provisioning: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Get provisioning status for a group
+     * Implements Requirements 1.3: Provisioning status monitoring
+     */
+    async getProvisioningStatus( groupId: string, enterpriseAppId: string ): Promise<{
+        isProvisioned: boolean;
+        status: 'NotProvisioned' | 'Provisioning' | 'Provisioned' | 'Failed' | 'Unknown';
+        lastProvisioningTime?: Date;
+        errors: string[];
+        details?: {
+            targetId?: string;
+            targetDisplayName?: string;
+            action?: string;
+        };
+    }> {
+        const result = {
+            isProvisioned: false,
+            status: 'Unknown' as 'NotProvisioned' | 'Provisioning' | 'Provisioned' | 'Failed' | 'Unknown',
+            lastProvisioningTime: undefined as Date | undefined,
+            errors: [] as string[],
+            details: undefined as any
+        };
+
+        try {
+            // Check if group is assigned to the enterprise app
+            const isAssigned = await this.isGroupAssignedToEnterpriseApp( groupId, enterpriseAppId );
+            if ( !isAssigned ) {
+                result.status = 'NotProvisioned';
+                result.errors.push( 'Group is not assigned to the enterprise application' );
+                return result;
+            }
+
+            // Get provisioning logs for the group
+            const provisioningLogs = await this.getProvisioningLogs( groupId, enterpriseAppId );
+
+            if ( provisioningLogs.length === 0 ) {
+                result.status = 'NotProvisioned';
+                return result;
+            }
+
+            // Get the most recent provisioning log
+            const latestLog = provisioningLogs[ 0 ]; // Assuming logs are sorted by date
+
+            result.lastProvisioningTime = latestLog.activityDateTime ? new Date( latestLog.activityDateTime ) : undefined;
+
+            // Determine status based on the latest log
+            if ( latestLog.provisioningStatusInfo?.status ) {
+                switch ( latestLog.provisioningStatusInfo.status.toLowerCase() ) {
+                    case 'success':
+                        result.status = 'Provisioned';
+                        result.isProvisioned = true;
+                        break;
+                    case 'failure':
+                        result.status = 'Failed';
+                        result.errors.push( latestLog.provisioningStatusInfo.errorInformation?.errorDetails || 'Provisioning failed' );
+                        break;
+                    case 'skipped':
+                        result.status = 'NotProvisioned';
+                        break;
+                    default:
+                        result.status = 'Provisioning';
+                }
+            }
+
+            // Set details if available
+            if ( latestLog.targetIdentity ) {
+                result.details = {
+                    targetId: latestLog.targetIdentity.id,
+                    targetDisplayName: latestLog.targetIdentity.displayName,
+                    action: latestLog.provisioningAction
+                };
+            }
+
+        } catch ( error ) {
+            result.errors.push( `Failed to get provisioning status: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Check if a group is assigned to an enterprise application
+     */
+    private async isGroupAssignedToEnterpriseApp( groupId: string, enterpriseAppId: string ): Promise<boolean> {
+        try {
+            const response = await this.graphClient
+                .api( `/groups/${groupId}/appRoleAssignments` )
+                .filter( `resourceId eq '${enterpriseAppId}'` )
+                .get();
+
+            return response.value && response.value.length > 0;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Get the default app role for an enterprise application
+     */
+    private async getDefaultAppRole( enterpriseAppId: string ): Promise<{ id: string; displayName: string } | null> {
+        try {
+            const response = await this.graphClient
+                .api( `/servicePrincipals/${enterpriseAppId}` )
+                .select( 'appRoles' )
+                .get();
+
+            const appRoles = response.appRoles || [];
+
+            // Look for default role (usually has value "User" or is the first role)
+            const defaultRole = appRoles.find( ( role: any ) =>
+                role.value === 'User' || role.isDefault === true
+            ) || appRoles[ 0 ];
+
+            return defaultRole ? { id: defaultRole.id, displayName: defaultRole.displayName } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Get provisioning logs for a specific group and enterprise app
+     */
+    private async getProvisioningLogs( groupId: string, enterpriseAppId: string ): Promise<any[]> {
+        try {
+            const response = await this.graphClient
+                .api( '/auditLogs/provisioning' )
+                .filter( `targetResources/any(t: t/id eq '${groupId}') and servicePrincipal/id eq '${enterpriseAppId}'` )
+                .orderby( 'activityDateTime desc' )
+                .top( 10 )
+                .get();
+
+            return response.value || [];
+        } catch {
+            return [];
+        }
     }
 }
