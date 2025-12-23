@@ -25,14 +25,14 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
     - Cross-reference with existing AWS assignments
     - _Requirements: 1.2, 1.3_
 
-- [ ] 3. Implement AWS IAM Identity Center integration
-  - [ ] 3.1 Create AWS SSO Admin client
+- [x] 3. Implement AWS IAM Identity Center integration
+  - [x] 3.1 Create AWS SSO Admin client
     - Set up AWS SDK v3 SSO Admin client
     - Implement permission set listing and creation
     - Add account assignment operations
     - _Requirements: 2.1, 2.2, 3.1, 3.3_
 
-  - [ ] 3.2 Create AWS Identity Store client
+  - [x] 3.2 Create AWS Identity Store client
     - Set up Identity Store client for group operations
     - Implement group synchronization checking
     - Add assignment status validation
