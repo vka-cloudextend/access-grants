@@ -78,19 +78,19 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
     - Add conflict detection and resolution
     - _Requirements: 3.2, 7.4_
 
-  - [ ] 4.2 Implement permission set management
+  - [x] 4.2 Implement permission set management
     - Create permission set templates for common patterns
     - Add custom permission set creation workflow
     - Implement permission set validation
     - _Requirements: 2.2, 2.3, 2.4_
 
-  - [ ] 4.3 Complete rollback implementation
-    - [ ] 4.3.1 Implement Azure rollback actions
+  - [x] 4.3 Complete rollback implementation
+    - [x] 4.3.1 Implement Azure rollback actions
       - Add DELETE_AZURE_GROUP rollback action implementation
       - Add REMOVE_ENTERPRISE_APP_ASSIGNMENT rollback action implementation
       - _Requirements: 7.3_
 
-    - [ ] 4.3.2 Implement AWS rollback actions
+    - [x] 4.3.2 Implement AWS rollback actions
       - Complete DELETE_ASSIGNMENT rollback action using AWS client
       - Complete DELETE_PERMISSION_SET rollback action
       - Add proper error handling for rollback failures

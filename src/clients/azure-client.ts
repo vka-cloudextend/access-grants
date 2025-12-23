@@ -1079,4 +1079,173 @@ export class AzureClient {
             return [];
         }
     }
+
+    // Rollback Methods for Requirements 7.3
+
+    /**
+     * Delete an Azure AD security group
+     * Used for rollback operations when group creation needs to be undone
+     * Implements Requirements 7.3: Rollback capabilities
+     */
+    async deleteGroup( groupId: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            // Validate group exists first
+            const groupExists = await this.groupExists( groupId );
+            if ( !groupExists ) {
+                result.errors.push( 'Group does not exist or is not accessible' );
+                return result;
+            }
+
+            // Delete the group
+            await this.graphClient
+                .api( `/groups/${groupId}` )
+                .delete();
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to delete group: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Remove a group's assignment from an enterprise application
+     * Used for rollback operations when enterprise app assignment needs to be undone
+     * Implements Requirements 7.3: Rollback capabilities
+     */
+    async removeGroupFromEnterpriseApp( groupId: string, enterpriseAppId: string ): Promise<{
+        success: boolean;
+        removedAssignments: string[];
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            removedAssignments: [] as string[],
+            errors: [] as string[]
+        };
+
+        try {
+            // Get all app role assignments for the group to this enterprise app
+            const response = await this.graphClient
+                .api( `/groups/${groupId}/appRoleAssignments` )
+                .filter( `resourceId eq '${enterpriseAppId}'` )
+                .get();
+
+            const assignments = response.value || [];
+
+            if ( assignments.length === 0 ) {
+                result.errors.push( 'No assignments found for this group and enterprise application' );
+                return result;
+            }
+
+            // Remove each assignment
+            for ( const assignment of assignments ) {
+                try {
+                    await this.graphClient
+                        .api( `/groups/${groupId}/appRoleAssignments/${assignment.id}` )
+                        .delete();
+
+                    result.removedAssignments.push( assignment.id );
+                } catch ( error ) {
+                    result.errors.push( `Failed to remove assignment ${assignment.id}: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
+            }
+
+            result.success = result.removedAssignments.length > 0;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to remove group from enterprise app: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Remove a specific app role assignment by assignment ID
+     * Used for more precise rollback operations
+     */
+    async removeAppRoleAssignment( groupId: string, assignmentId: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            await this.graphClient
+                .api( `/groups/${groupId}/appRoleAssignments/${assignmentId}` )
+                .delete();
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to remove app role assignment: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Remove a user from a group (for rollback of member additions)
+     */
+    async removeGroupMember( groupId: string, userId: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            await this.graphClient
+                .api( `/groups/${groupId}/members/${userId}/$ref` )
+                .delete();
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to remove group member: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Remove an owner from a group (for rollback of owner additions)
+     */
+    async removeGroupOwner( groupId: string, userId: string ): Promise<{
+        success: boolean;
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            errors: [] as string[]
+        };
+
+        try {
+            await this.graphClient
+                .api( `/groups/${groupId}/owners/${userId}/$ref` )
+                .delete();
+
+            result.success = true;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to remove group owner: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
 }

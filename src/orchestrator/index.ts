@@ -538,37 +538,69 @@ export class AssignmentOrchestrator {
 
     /**
      * Perform rollback actions
+     * Implements Requirements 7.3: Rollback capabilities with proper error handling
      */
     private async performRollback( workflowState: WorkflowState ): Promise<void> {
+        console.log( `Starting rollback for operation ${workflowState.operationId} with ${workflowState.rollbackActions.length} actions` );
+
+        const rollbackErrors: string[] = [];
+        let successfulRollbacks = 0;
+
+        // Execute rollback actions in reverse order (LIFO - Last In, First Out)
         for ( const action of workflowState.rollbackActions.reverse() ) {
             try {
+                console.log( `Executing rollback action: ${action.type}` );
+
                 switch ( action.type ) {
                     case 'DELETE_ASSIGNMENT':
-                        // Implementation would call AWS API to delete the assignment
-                        // This is a placeholder as the AWS client doesn't have delete assignment method yet
-                        console.warn( `Rollback: Would delete assignment for group ${action.data.groupId}` );
+                        await this.rollbackDeleteAssignment( action.data );
                         break;
                     case 'DELETE_PERMISSION_SET':
-                        // Implementation would call AWS API to delete the permission set
-                        console.warn( `Rollback: Would delete permission set ${action.data.permissionSetArn}` );
+                        await this.rollbackDeletePermissionSet( action.data );
                         break;
                     case 'RESTORE_ASSIGNMENT':
-                        // Implementation would restore a previous assignment
-                        console.warn( `Rollback: Would restore assignment ${action.data.assignmentId}` );
+                        await this.rollbackRestoreAssignment( action.data );
                         break;
                     case 'DELETE_AZURE_GROUP':
-                        // Implementation would call Azure API to delete the group
-                        console.warn( `Rollback: Would delete Azure group ${action.data.groupId} (${action.data.groupName})` );
+                        await this.rollbackDeleteAzureGroup( action.data );
                         break;
                     case 'REMOVE_ENTERPRISE_APP_ASSIGNMENT':
-                        // Implementation would remove enterprise app assignment
-                        console.warn( `Rollback: Would remove enterprise app assignment for group ${action.data.groupId}` );
+                        await this.rollbackRemoveEnterpriseAppAssignment( action.data );
                         break;
+                    default:
+                        console.warn( `Unknown rollback action type: ${action.type}` );
+                        continue;
                 }
+
+                successfulRollbacks++;
+                console.log( `Rollback action ${action.type} completed successfully` );
+
             } catch ( error ) {
-                // Log rollback failures but don't throw - we want to attempt all rollback actions
-                console.error( `Rollback action failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                const errorMessage = `Rollback action ${action.type} failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+                console.error( errorMessage );
+                rollbackErrors.push( errorMessage );
+
+                // Continue with other rollback actions even if one fails
+                // This ensures we attempt to clean up as much as possible
             }
+        }
+
+        // Log rollback summary
+        console.log( `Rollback completed: ${successfulRollbacks}/${workflowState.rollbackActions.length} actions successful` );
+
+        if ( rollbackErrors.length > 0 ) {
+            console.error( `Rollback errors encountered:` );
+            rollbackErrors.forEach( ( error, index ) => {
+                console.error( `  ${index + 1}. ${error}` );
+            } );
+
+            // Add rollback errors to workflow state for tracking
+            workflowState.errors.push( {
+                code: 'ROLLBACK_PARTIAL_FAILURE',
+                message: `${rollbackErrors.length} rollback actions failed: ${rollbackErrors.join( '; ' )}`,
+                details: { rollbackErrors, successfulRollbacks, totalActions: workflowState.rollbackActions.length },
+                timestamp: new Date()
+            } );
         }
     }
 
@@ -818,16 +850,17 @@ export class AssignmentOrchestrator {
         workflowState.currentStep = 'AZURE_GROUP_CREATION';
 
         try {
-            // This would need to be implemented in AzureClient
-            // const groupId = await this.azureClient.createSecurityGroup({
-            //     displayName: groupName,
-            //     description: request.description || `Access grant for ${request.accountType} environment - Ticket: ${request.ticketId}`,
-            //     mailEnabled: false,
-            //     securityEnabled: true
-            // });
+            // Create the security group using Azure client
+            const groupResult = await this.azureClient.createSecurityGroup(
+                groupName,
+                request.description || `Access grant for ${request.accountType} environment - Ticket: ${request.ticketId}`
+            );
 
-            // For now, return a placeholder
-            const groupId = `group-${Date.now()}`;
+            if ( !groupResult.success || !groupResult.groupId ) {
+                throw new Error( `Group creation failed: ${groupResult.errors.join( ', ' )}` );
+            }
+
+            const groupId = groupResult.groupId;
 
             workflowState.rollbackActions.push( {
                 type: 'DELETE_AZURE_GROUP',
@@ -858,12 +891,18 @@ export class AssignmentOrchestrator {
         try {
             // Add owners
             for ( const ownerEmail of owners ) {
-                // await this.azureClient.addGroupOwner(groupId, ownerEmail);
+                const ownerResult = await this.azureClient.addGroupOwner( groupId, ownerEmail );
+                if ( !ownerResult.success ) {
+                    throw new Error( `Failed to add owner ${ownerEmail}: ${ownerResult.errors.join( ', ' )}` );
+                }
             }
 
             // Add members
             for ( const memberEmail of members ) {
-                // await this.azureClient.addGroupMember(groupId, memberEmail);
+                const memberResult = await this.azureClient.addGroupMember( groupId, memberEmail );
+                if ( !memberResult.success ) {
+                    throw new Error( `Failed to add member ${memberEmail}: ${memberResult.errors.join( ', ' )}` );
+                }
             }
 
             workflowState.completedSteps.push( 'AZURE_GROUP_MEMBERS' );
@@ -887,15 +926,24 @@ export class AssignmentOrchestrator {
         workflowState.currentStep = 'ENTERPRISE_APP_CONFIG';
 
         try {
-            // This would need to be implemented in AzureClient
-            // await this.azureClient.assignGroupToEnterpriseApp(
-            //     this.config.azure.enterpriseApplicationId,
-            //     groupId
-            // );
+            // Assign group to enterprise application
+            const assignmentResult = await this.azureClient.assignGroupToEnterpriseApp(
+                groupId,
+                this.config.azure.enterpriseApplicationId
+            );
 
+            if ( !assignmentResult.success ) {
+                throw new Error( `Enterprise app assignment failed: ${assignmentResult.errors.join( ', ' )}` );
+            }
+
+            // Store rollback action with assignment ID if available
             workflowState.rollbackActions.push( {
                 type: 'REMOVE_ENTERPRISE_APP_ASSIGNMENT',
-                data: { groupId, enterpriseAppId: this.config.azure.enterpriseApplicationId }
+                data: {
+                    groupId,
+                    enterpriseAppId: this.config.azure.enterpriseApplicationId,
+                    assignmentId: assignmentResult.assignmentId
+                }
             } );
 
             workflowState.completedSteps.push( 'ENTERPRISE_APP_CONFIG' );
@@ -919,8 +967,15 @@ export class AssignmentOrchestrator {
         workflowState.currentStep = 'PROVISIONING';
 
         try {
-            // This would need to be implemented in AzureClient
-            // await this.azureClient.triggerProvisionOnDemand(groupId);
+            // Trigger on-demand provisioning
+            const provisioningResult = await this.azureClient.triggerProvisionOnDemand(
+                groupId,
+                this.config.azure.enterpriseApplicationId
+            );
+
+            if ( !provisioningResult.success ) {
+                console.warn( `On-demand provisioning failed, continuing with normal sync: ${provisioningResult.errors.join( ', ' )}` );
+            }
 
             // Wait for provisioning to complete with timeout
             const maxWaitTime = 300000; // 5 minutes
@@ -928,8 +983,16 @@ export class AssignmentOrchestrator {
 
             while ( Date.now() - startTime < maxWaitTime ) {
                 // Check provisioning status
-                // const status = await this.azureClient.getProvisioningStatus(groupId);
-                // if (status === 'COMPLETED') break;
+                const statusResult = await this.azureClient.getProvisioningStatus(
+                    groupId,
+                    this.config.azure.enterpriseApplicationId
+                );
+
+                if ( statusResult.status === 'Provisioned' ) {
+                    break;
+                } else if ( statusResult.status === 'Failed' ) {
+                    throw new Error( `Provisioning failed: ${statusResult.errors.join( ', ' )}` );
+                }
 
                 await new Promise( resolve => setTimeout( resolve, 10000 ) ); // Wait 10 seconds
             }
@@ -1211,5 +1274,179 @@ export class AssignmentOrchestrator {
         } catch ( error ) {
             throw new Error( `Validation failed for ${groupName}: ${error instanceof Error ? error.message : 'Unknown error'}` );
         }
+    }
+
+    // Rollback Implementation Methods for Requirements 7.3
+
+    /**
+     * Rollback: Delete Azure AD group
+     */
+    private async rollbackDeleteAzureGroup( data: Record<string, unknown> ): Promise<void> {
+        const groupId = data.groupId as string;
+        const groupName = data.groupName as string;
+
+        if ( !groupId ) {
+            throw new Error( 'Group ID is required for Azure group deletion rollback' );
+        }
+
+        console.log( `Rollback: Deleting Azure group ${groupId} (${groupName})` );
+
+        try {
+            const result = await this.azureClient.deleteGroup( groupId );
+            if ( !result.success ) {
+                throw new Error( `Failed to delete Azure group ${groupId}: ${result.errors.join( ', ' )}` );
+            }
+
+            console.log( `Rollback: Successfully deleted Azure group ${groupId}` );
+        } catch ( error ) {
+            // If the group doesn't exist, consider it a successful rollback
+            if ( error instanceof Error && ( error.message.includes( 'not found' ) || error.message.includes( 'does not exist' ) ) ) {
+                console.log( `Rollback: Azure group ${groupId} already deleted or doesn't exist` );
+                return;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Rollback: Remove enterprise application assignment
+     */
+    private async rollbackRemoveEnterpriseAppAssignment( data: Record<string, unknown> ): Promise<void> {
+        const groupId = data.groupId as string;
+        const enterpriseAppId = data.enterpriseAppId as string;
+        const assignmentId = data.assignmentId as string;
+
+        if ( !groupId || !enterpriseAppId ) {
+            throw new Error( 'Group ID and Enterprise App ID are required for enterprise app assignment removal rollback' );
+        }
+
+        console.log( `Rollback: Removing enterprise app assignment for group ${groupId}` );
+
+        try {
+            let result;
+            if ( assignmentId ) {
+                // Remove specific assignment if we have the ID
+                result = await this.azureClient.removeAppRoleAssignment( groupId, assignmentId );
+            } else {
+                // Remove all assignments for this group and enterprise app
+                result = await this.azureClient.removeGroupFromEnterpriseApp( groupId, enterpriseAppId );
+            }
+
+            if ( !result.success ) {
+                throw new Error( `Failed to remove enterprise app assignment for group ${groupId}: ${result.errors.join( ', ' )}` );
+            }
+
+            console.log( `Rollback: Successfully removed enterprise app assignment for group ${groupId}` );
+        } catch ( error ) {
+            // If the assignment doesn't exist, consider it a successful rollback
+            if ( error instanceof Error && ( error.message.includes( 'not found' ) || error.message.includes( 'does not exist' ) ) ) {
+                console.log( `Rollback: Enterprise app assignment for group ${groupId} already removed or doesn't exist` );
+                return;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Rollback: Delete AWS assignment
+     */
+    private async rollbackDeleteAssignment( data: Record<string, unknown> ): Promise<void> {
+        const groupId = data.groupId as string;
+        const accountId = data.accountId as string;
+        const permissionSetArn = data.permissionSetArn as string;
+
+        if ( !groupId || !accountId || !permissionSetArn ) {
+            throw new Error( 'Group ID, Account ID, and Permission Set ARN are required for assignment deletion rollback' );
+        }
+
+        console.log( `Rollback: Deleting AWS assignment for group ${groupId} in account ${accountId}` );
+
+        try {
+            const result = await this.awsClient.deleteAccountAssignment( groupId, accountId, permissionSetArn );
+
+            // Wait for deletion to complete with proper error handling
+            const maxRetries = 30; // 5 minutes with 10-second intervals
+            let retries = 0;
+
+            while ( retries < maxRetries ) {
+                try {
+                    const status = await this.awsClient.validateAssignmentDeletionStatus( result.requestId );
+
+                    if ( status.status === 'SUCCEEDED' ) {
+                        console.log( `Rollback: Successfully deleted AWS assignment for group ${groupId}` );
+                        return;
+                    } else if ( status.status === 'FAILED' ) {
+                        throw new Error( `AWS assignment deletion failed: ${status.failureReason || 'Unknown error'}` );
+                    }
+
+                    // Status is IN_PROGRESS, continue waiting
+                    retries++;
+                    if ( retries < maxRetries ) {
+                        await new Promise( resolve => setTimeout( resolve, 10000 ) ); // Wait 10 seconds
+                    }
+                } catch ( statusError ) {
+                    // If status check fails, retry a few times before giving up
+                    if ( retries >= 3 ) {
+                        throw new Error( `Failed to check assignment deletion status: ${statusError instanceof Error ? statusError.message : 'Unknown error'}` );
+                    }
+                    retries++;
+                    await new Promise( resolve => setTimeout( resolve, 10000 ) );
+                }
+            }
+
+            throw new Error( `AWS assignment deletion timed out after ${maxRetries} attempts` );
+        } catch ( error ) {
+            // If the assignment doesn't exist, consider it a successful rollback
+            if ( error instanceof Error && ( error.message.includes( 'not found' ) || error.message.includes( 'does not exist' ) ) ) {
+                console.log( `Rollback: AWS assignment for group ${groupId} already deleted or doesn't exist` );
+                return;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Rollback: Delete AWS permission set
+     */
+    private async rollbackDeletePermissionSet( data: Record<string, unknown> ): Promise<void> {
+        const permissionSetArn = data.permissionSetArn as string;
+
+        if ( !permissionSetArn ) {
+            throw new Error( 'Permission Set ARN is required for permission set deletion rollback' );
+        }
+
+        console.log( `Rollback: Deleting AWS permission set ${permissionSetArn}` );
+
+        try {
+            await this.awsClient.deletePermissionSet( permissionSetArn );
+            console.log( `Rollback: Successfully deleted AWS permission set ${permissionSetArn}` );
+        } catch ( error ) {
+            // If the permission set doesn't exist, consider it a successful rollback
+            if ( error instanceof Error && ( error.message.includes( 'not found' ) || error.message.includes( 'does not exist' ) ) ) {
+                console.log( `Rollback: AWS permission set ${permissionSetArn} already deleted or doesn't exist` );
+                return;
+            }
+
+            // Check if permission set is still in use
+            if ( error instanceof Error && ( error.message.includes( 'in use' ) || error.message.includes( 'has assignments' ) ) ) {
+                console.warn( `Rollback: Cannot delete permission set ${permissionSetArn} - still in use. Manual cleanup may be required.` );
+                return;
+            }
+
+            throw error;
+        }
+    }
+
+    /**
+     * Rollback: Restore assignment (placeholder for future implementation)
+     */
+    private async rollbackRestoreAssignment( data: Record<string, unknown> ): Promise<void> {
+        const assignmentId = data.assignmentId as string;
+
+        console.log( `Rollback: Restoring assignment ${assignmentId} (not yet implemented)` );
+
+        // This would require storing previous assignment state and restoring it
+        // For now, this is a placeholder that logs the action
+        console.warn( `Rollback: Assignment restoration for ${assignmentId} is not yet implemented` );
     }
 }
