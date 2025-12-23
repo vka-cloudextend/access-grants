@@ -1,3 +1,7 @@
+---
+inclusion: manual
+---
+
 # Conventional Commits Style Guide
 
 This project follows the Conventional Commits specification for commit messages. This provides a consistent format that enables automated tooling and clear communication about changes.

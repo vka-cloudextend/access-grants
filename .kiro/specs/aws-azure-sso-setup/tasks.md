@@ -12,14 +12,14 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
   - Set up build and development scripts
   - _Requirements: All requirements (foundation)_
 
-- [ ] 2. Implement Azure AD integration
-  - [ ] 2.1 Create Azure AD client with Microsoft Graph SDK
+- [x] 2. Implement Azure AD integration
+  - [x] 2.1 Create Azure AD client with Microsoft Graph SDK
     - Implement authentication using client credentials flow
     - Create methods to list security groups with filtering
     - Add group member retrieval functionality
     - _Requirements: 1.1, 1.3_
 
-  - [ ] 2.2 Implement group validation logic
+  - [x] 2.2 Implement group validation logic
     - Check if groups are active and have members
     - Validate group types (security groups only)
     - Cross-reference with existing AWS assignments
