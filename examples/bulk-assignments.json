@@ -1,0 +1,14 @@
+[
+    {
+        "azureGroupId": "12345678-1234-1234-1234-123456789012",
+        "azureGroupName": "CE-AWS-Dev-AG-001",
+        "awsAccountId": "123456789012",
+        "permissionSetArn": "arn:aws:sso:::permissionSet/ssoins-1234567890123456/ps-1234567890123456"
+    },
+    {
+        "azureGroupId": "87654321-4321-4321-4321-210987654321",
+        "azureGroupName": "CE-AWS-QA-AG-002",
+        "awsAccountId": "210987654321",
+        "permissionSetArn": "arn:aws:sso:::permissionSet/ssoins-1234567890123456/ps-6543210987654321"
+    }
+]

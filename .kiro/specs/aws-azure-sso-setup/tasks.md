@@ -96,34 +96,34 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
       - Add proper error handling for rollback failures
       - _Requirements: 7.3_
 
-- [ ] 5. Build CLI interface
-  - [ ] 5.1 Create main CLI commands
+- [x] 5. Build CLI interface
+  - [x] 5.1 Create main CLI commands
     - `discover-groups` - List and filter Azure AD groups
     - `list-permission-sets` - Show available AWS permission sets
     - `assign-group` - Assign a group to permission set and accounts
     - `bulk-assign` - Assign multiple groups at once
     - _Requirements: 1.1, 2.1, 3.3, 6.1_
 
-  - [ ] 5.2 Add standardized workflow commands
-    - [ ] 5.2.1 Implement create-access command
+  - [x] 5.2 Add standardized workflow commands
+    - [x] 5.2.1 Implement create-access command
       - Add create-access command for standardized access grant workflow
       - Support account type, ticket ID, owners, and members parameters
       - Integrate with permission set templates
       - _Requirements: 1.1, 2.1, 3.1, 3.3_
 
-    - [ ] 5.2.2 Implement list-access command
+    - [x] 5.2.2 Implement list-access command
       - Add list-access command to show existing access grants
       - Support filtering by account type
       - Display group names, status, and creation dates
       - _Requirements: 5.1_
 
-    - [ ] 5.2.3 Implement validate-access command
+    - [x] 5.2.3 Implement validate-access command
       - Add validate-access command for access grant validation
       - Check Azure group, synchronization, permission set, and assignment status
       - Provide detailed validation reports
       - _Requirements: 4.1, 4.3, 4.4_
 
-  - [ ] 5.3 Add management and reporting commands
+  - [x] 5.3 Add management and reporting commands
     - `list-assignments` - Show current group assignments
     - `validate-assignments` - Test assignment functionality
     - `export-config` - Export current configuration
