@@ -60,13 +60,13 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
     - Add assignment status validation
     - _Requirements: 4.1, 4.3_
 
-  - [ ] 3.3 Complete AWS client implementation
-    - [ ] 3.3.1 Implement assignment deletion methods
+  - [x] 3.3 Complete AWS client implementation
+    - [x] 3.3.1 Implement assignment deletion methods
       - Add deleteAccountAssignment method for rollback operations
       - Add deletePermissionSet method for cleanup
       - _Requirements: 7.3_
 
-    - [ ] 3.3.2 Enhance assignment listing
+    - [x] 3.3.2 Enhance assignment listing
       - Improve getAccountAssignmentsForPermissionSet method
       - Add proper account enumeration for comprehensive listing
       - _Requirements: 5.1_

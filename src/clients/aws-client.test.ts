@@ -23,7 +23,12 @@ describe( 'AWSClient', () => {
         expect( typeof awsClient.listPermissionSets ).toBe( 'function' );
         expect( typeof awsClient.createPermissionSet ).toBe( 'function' );
         expect( typeof awsClient.assignGroupToAccount ).toBe( 'function' );
+        expect( typeof awsClient.deleteAccountAssignment ).toBe( 'function' );
+        expect( typeof awsClient.deletePermissionSet ).toBe( 'function' );
+        expect( typeof awsClient.validateAssignmentDeletionStatus ).toBe( 'function' );
         expect( typeof awsClient.listAccountAssignments ).toBe( 'function' );
+        expect( typeof awsClient.listOrganizationAccounts ).toBe( 'function' );
+        expect( typeof awsClient.getAccountAssignmentsForAccount ).toBe( 'function' );
         expect( typeof awsClient.checkGroupSynchronizationStatus ).toBe( 'function' );
         expect( typeof awsClient.validateAssignmentStatus ).toBe( 'function' );
         expect( typeof awsClient.getGroupDetails ).toBe( 'function' );
