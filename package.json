@@ -30,21 +30,23 @@
     "author": "",
     "license": "MIT",
     "dependencies": {
-        "@aws-sdk/client-sso-admin": "^3.490.0",
         "@aws-sdk/client-identitystore": "^3.490.0",
         "@aws-sdk/client-organizations": "^3.490.0",
+        "@aws-sdk/client-sso-admin": "^3.490.0",
         "@azure/msal-node": "^2.6.0",
         "@microsoft/microsoft-graph-client": "^3.0.7",
+        "@types/uuid": "^10.0.0",
+        "chalk": "^4.1.2",
         "commander": "^11.1.0",
         "dotenv": "^16.3.1",
-        "chalk": "^4.1.2",
         "inquirer": "^8.2.6",
-        "ora": "^5.4.1"
+        "ora": "^5.4.1",
+        "uuid": "^13.0.0"
     },
     "devDependencies": {
-        "@types/node": "^20.10.0",
-        "@types/jest": "^29.5.8",
         "@types/inquirer": "^9.0.7",
+        "@types/jest": "^29.5.8",
+        "@types/node": "^20.10.0",
         "@typescript-eslint/eslint-plugin": "^6.13.0",
         "@typescript-eslint/parser": "^6.13.0",
         "eslint": "^8.54.0",
