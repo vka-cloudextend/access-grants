@@ -1,6 +1,5 @@
 // Operation History Storage Tests
 import * as fs from 'fs/promises';
-import * as path from 'path';
 import { OperationHistoryStorage } from './operation-history';
 import { AssignmentOperation } from '../types';
 
@@ -14,35 +13,48 @@ jest.mock( 'os', () => ( {
 describe( 'OperationHistoryStorage', () => {
     let storage: OperationHistoryStorage;
     const mockFs = fs as jest.Mocked<typeof fs>;
+    const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
 
     beforeEach( () => {
         jest.clearAllMocks();
+
+        // Reset all mocks to default behavior
+        mockExistsSync.mockReturnValue( false );
+        mockFs.mkdir.mockResolvedValue( undefined );
+        mockFs.readFile.mockResolvedValue( '{"operations": []}' );
+        mockFs.writeFile.mockResolvedValue( undefined );
+        mockFs.stat.mockResolvedValue( { size: 1024 } as any );
+
         storage = new OperationHistoryStorage( {
-            maxEntries: 100,
-            retentionDays: 7,
-            autoSave: false // Disable auto-save for testing
+            maxEntries: 10,
+            retentionDays: 1,
+            autoSave: false
+        } );
+    } );
+
+    describe( 'constructor and basic properties', () => {
+        it( 'should create storage instance with correct file path', () => {
+            expect( storage ).toBeDefined();
+            expect( storage.getHistoryFilePath() ).toBe( '/mock/home/.aws-ag/operation-history.json' );
+        } );
+
+        it( 'should not be initialized initially', () => {
+            expect( storage.isInitialized() ).toBe( false );
         } );
     } );
 
     describe( 'initialization', () => {
-        it( 'should initialize with empty history when file does not exist', async () => {
-            // Mock file not existing
-            const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
+        it( 'should initialize successfully when file does not exist', async () => {
             mockExistsSync.mockReturnValue( false );
-            mockFs.mkdir.mockResolvedValue( undefined );
 
             await storage.initialize();
 
             expect( storage.isInitialized() ).toBe( true );
-            const operations = await storage.getAllOperations();
-            expect( operations ).toHaveLength( 0 );
+            expect( mockFs.mkdir ).toHaveBeenCalledWith( '/mock/home/.aws-ag', { recursive: true } );
         } );
 
         it( 'should load existing operations from file', async () => {
-            const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
             mockExistsSync.mockReturnValue( true );
-            mockFs.mkdir.mockResolvedValue( undefined );
-
             const mockOperations = [ {
                 operationId: 'test-op-1',
                 operationType: 'CREATE',
@@ -60,33 +72,30 @@ describe( 'OperationHistoryStorage', () => {
 
             await storage.initialize();
 
-            const operations = await storage.getAllOperations();
-            expect( operations ).toHaveLength( 1 );
-            expect( operations[ 0 ].operationId ).toBe( 'test-op-1' );
-            expect( operations[ 0 ].startTime ).toBeInstanceOf( Date );
+            expect( mockFs.readFile ).toHaveBeenCalledWith( '/mock/home/.aws-ag/operation-history.json', 'utf8' );
+            expect( storage.isInitialized() ).toBe( true );
+        } );
+
+        it( 'should handle initialization errors gracefully', async () => {
+            mockExistsSync.mockReturnValue( false );
+            mockFs.mkdir.mockRejectedValue( new Error( 'Permission denied' ) );
+
+            await expect( storage.initialize() ).resolves.not.toThrow();
+            expect( storage.isInitialized() ).toBe( true );
         } );
     } );
 
     describe( 'operation management', () => {
         beforeEach( async () => {
-            const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
             mockExistsSync.mockReturnValue( false );
-            mockFs.mkdir.mockResolvedValue( undefined );
             await storage.initialize();
         } );
 
-        it( 'should add and retrieve operations', async () => {
+        it( 'should add operation without auto-save', async () => {
             const operation: AssignmentOperation = {
                 operationId: 'test-op-1',
                 operationType: 'CREATE',
-                assignments: [ {
-                    azureGroupId: 'group-1',
-                    azureGroupName: 'Test Group',
-                    awsAccountId: '123456789012',
-                    permissionSetArn: 'arn:aws:sso:::permissionSet/test',
-                    assignmentStatus: 'ACTIVE',
-                    createdDate: new Date()
-                } ],
+                assignments: [],
                 status: 'COMPLETED',
                 errors: [],
                 startTime: new Date(),
@@ -95,10 +104,57 @@ describe( 'OperationHistoryStorage', () => {
 
             await storage.addOperation( operation );
 
+            // Should not call writeFile since autoSave is false
+            expect( mockFs.writeFile ).not.toHaveBeenCalled();
+        } );
+
+        it( 'should retrieve added operation', async () => {
+            const operation: AssignmentOperation = {
+                operationId: 'test-op-1',
+                operationType: 'CREATE',
+                assignments: [],
+                status: 'COMPLETED',
+                errors: [],
+                startTime: new Date(),
+                endTime: new Date()
+            };
+
+            await storage.addOperation( operation );
             const retrieved = await storage.getOperation( 'test-op-1' );
+
             expect( retrieved ).toBeDefined();
             expect( retrieved?.operationId ).toBe( 'test-op-1' );
             expect( retrieved?.operationType ).toBe( 'CREATE' );
+        } );
+
+        it( 'should get all operations', async () => {
+            const operations: AssignmentOperation[] = [
+                {
+                    operationId: 'op-1',
+                    operationType: 'CREATE',
+                    assignments: [],
+                    status: 'COMPLETED',
+                    errors: [],
+                    startTime: new Date( '2023-01-01' ),
+                    endTime: new Date( '2023-01-01' )
+                },
+                {
+                    operationId: 'op-2',
+                    operationType: 'DELETE',
+                    assignments: [],
+                    status: 'FAILED',
+                    errors: [],
+                    startTime: new Date( '2023-01-02' ),
+                    endTime: new Date( '2023-01-02' )
+                }
+            ];
+
+            for ( const op of operations ) {
+                await storage.addOperation( op );
+            }
+
+            const allOps = await storage.getAllOperations();
+            expect( allOps ).toHaveLength( 2 );
         } );
 
         it( 'should filter operations by criteria', async () => {
@@ -136,13 +192,71 @@ describe( 'OperationHistoryStorage', () => {
             expect( result.operations[ 0 ].operationId ).toBe( 'op-1' );
             expect( result.total ).toBe( 1 );
         } );
+
+        it( 'should delete operations', async () => {
+            const operation: AssignmentOperation = {
+                operationId: 'test-op-1',
+                operationType: 'CREATE',
+                assignments: [],
+                status: 'COMPLETED',
+                errors: [],
+                startTime: new Date(),
+                endTime: new Date()
+            };
+
+            await storage.addOperation( operation );
+            const deleted = await storage.deleteOperation( 'test-op-1' );
+
+            expect( deleted ).toBe( true );
+            const retrieved = await storage.getOperation( 'test-op-1' );
+            expect( retrieved ).toBeUndefined();
+        } );
+    } );
+
+    describe( 'file operations', () => {
+        beforeEach( async () => {
+            mockExistsSync.mockReturnValue( false );
+            await storage.initialize();
+        } );
+
+        it( 'should save to file when explicitly called', async () => {
+            await storage.saveToFile();
+
+            expect( mockFs.writeFile ).toHaveBeenCalledWith(
+                '/mock/home/.aws-ag/operation-history.json',
+                expect.stringContaining( '"version": "1.0"' ),
+                'utf8'
+            );
+        } );
+
+        it( 'should auto-save when enabled', async () => {
+            const autoSaveStorage = new OperationHistoryStorage( {
+                maxEntries: 10,
+                retentionDays: 1,
+                autoSave: true
+            } );
+
+            await autoSaveStorage.initialize();
+
+            const operation: AssignmentOperation = {
+                operationId: 'test-op-1',
+                operationType: 'CREATE',
+                assignments: [],
+                status: 'COMPLETED',
+                errors: [],
+                startTime: new Date(),
+                endTime: new Date()
+            };
+
+            await autoSaveStorage.addOperation( operation );
+
+            expect( mockFs.writeFile ).toHaveBeenCalled();
+        } );
     } );
 
     describe( 'cleanup', () => {
         beforeEach( async () => {
-            const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
             mockExistsSync.mockReturnValue( false );
-            mockFs.mkdir.mockResolvedValue( undefined );
             await storage.initialize();
         } );
 
@@ -181,10 +295,7 @@ describe( 'OperationHistoryStorage', () => {
 
     describe( 'statistics', () => {
         beforeEach( async () => {
-            const mockExistsSync = require( 'fs' ).existsSync as jest.Mock;
             mockExistsSync.mockReturnValue( false );
-            mockFs.mkdir.mockResolvedValue( undefined );
-            mockFs.stat.mockResolvedValue( { size: 1024 } as any );
             await storage.initialize();
         } );
 

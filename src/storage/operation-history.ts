@@ -39,11 +39,10 @@ export class OperationHistoryStorage {
 
             // Load existing history
             await this.loadFromFile();
+            this.isLoaded = true;
 
             // Clean up old entries
             await this.cleanup();
-
-            this.isLoaded = true;
         } catch ( error ) {
             // eslint-disable-next-line no-console
             console.warn( `Warning: Failed to initialize operation history storage: ${error instanceof Error ? error.message : 'Unknown error'}` );
