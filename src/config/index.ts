@@ -1,5 +1,5 @@
 // Configuration Management for AWS Access Grants (aws-ag)
-import { config as dotenvConfig } from 'dotenv';
+import { config as dotenvxConfig } from '@dotenvx/dotenvx';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -15,6 +15,7 @@ export interface AWSConfig {
     region: string;
     identityCenterInstanceArn: string;
     identityStoreId: string;
+    profile?: string; // AWS profile name from ~/.aws/credentials
     accountMapping: {
         Dev: string;
         QA: string;
@@ -65,8 +66,8 @@ export class ConfigManager {
     private config: ToolConfig;
     private configSources: string[] = [];
 
-    constructor() {
-        this.config = this.loadConfiguration();
+    constructor( options: { skipEnvLoad?: boolean } = {} ) {
+        this.config = this.loadConfiguration( options.skipEnvLoad );
     }
 
     /**
@@ -76,9 +77,11 @@ export class ConfigManager {
      * 3. User config file (~/.aws-ag/config.json)
      * 4. Default values (lowest priority)
      */
-    private loadConfiguration(): ToolConfig {
-        // Load environment variables first
-        dotenvConfig();
+    private loadConfiguration( skipEnvLoad = false ): ToolConfig {
+        // Load environment variables first (unless skipped for testing)
+        if ( !skipEnvLoad ) {
+            dotenvxConfig();
+        }
 
         // Start with default configuration
         let config = this.getDefaultConfig();
@@ -167,6 +170,7 @@ export class ConfigManager {
 
         // AWS configuration
         if ( env.AWS_REGION ) config.aws.region = env.AWS_REGION;
+        if ( env.AWS_PROFILE ) config.aws.profile = env.AWS_PROFILE;
         if ( env.AWS_IDENTITY_CENTER_INSTANCE_ARN ) config.aws.identityCenterInstanceArn = env.AWS_IDENTITY_CENTER_INSTANCE_ARN;
         if ( env.AWS_IDENTITY_STORE_ID ) config.aws.identityStoreId = env.AWS_IDENTITY_STORE_ID;
         if ( env.AWS_ACCOUNT_DEV ) config.aws.accountMapping.Dev = env.AWS_ACCOUNT_DEV;
@@ -361,6 +365,7 @@ export class ConfigManager {
             },
             aws: {
                 region: "us-east-1",
+                profile: "default",
                 identityCenterInstanceArn: "arn:aws:sso:::instance/ssoins-xxxxxxxxxx",
                 identityStoreId: "d-xxxxxxxxxx",
                 accountMapping: {
@@ -402,6 +407,7 @@ AZURE_ENTERPRISE_APP_ID=your-enterprise-app-id
 
 # AWS Configuration
 AWS_REGION=us-east-1
+AWS_PROFILE=default
 AWS_IDENTITY_CENTER_INSTANCE_ARN=arn:aws:sso:::instance/ssoins-xxxxxxxxxx
 AWS_IDENTITY_STORE_ID=d-xxxxxxxxxx
 

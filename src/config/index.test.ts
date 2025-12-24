@@ -1,11 +1,22 @@
 // Tests for Configuration Management
 import { ConfigManager } from './index';
 
+// Store original environment to restore after tests
+const originalEnv = { ...process.env };
+
 describe( 'ConfigManager', () => {
     let configManager: ConfigManager;
 
     beforeEach( () => {
-        // Clear environment variables for clean tests
+        // Reset environment to original state first
+        Object.keys( process.env ).forEach( key => {
+            if ( !originalEnv.hasOwnProperty( key ) ) {
+                delete process.env[ key ];
+            }
+        } );
+        Object.assign( process.env, originalEnv );
+
+        // Clear all environment variables that could affect config validation
         delete process.env.AZURE_TENANT_ID;
         delete process.env.AZURE_CLIENT_ID;
         delete process.env.AZURE_CLIENT_SECRET;
@@ -17,8 +28,19 @@ describe( 'ConfigManager', () => {
         delete process.env.AWS_ACCOUNT_QA;
         delete process.env.AWS_ACCOUNT_STAGING;
         delete process.env.AWS_ACCOUNT_PROD;
+        delete process.env.AWS_PROFILE;
 
-        configManager = new ConfigManager();
+        configManager = new ConfigManager( { skipEnvLoad: true } );
+    } );
+
+    afterEach( () => {
+        // Restore original environment after each test
+        Object.keys( process.env ).forEach( key => {
+            if ( !originalEnv.hasOwnProperty( key ) ) {
+                delete process.env[ key ];
+            }
+        } );
+        Object.assign( process.env, originalEnv );
     } );
 
     describe( 'validateConfig', () => {
@@ -57,7 +79,7 @@ describe( 'ConfigManager', () => {
             process.env.AWS_ACCOUNT_STAGING = '123456789013';
             process.env.AWS_ACCOUNT_PROD = '123456789014';
 
-            configManager = new ConfigManager();
+            configManager = new ConfigManager( { skipEnvLoad: true } );
             const validation = configManager.validateConfig();
 
             expect( validation.isValid ).toBe( false );
@@ -78,7 +100,7 @@ describe( 'ConfigManager', () => {
             process.env.AWS_ACCOUNT_STAGING = '123456789014';
             process.env.AWS_ACCOUNT_PROD = '123456789015';
 
-            configManager = new ConfigManager();
+            configManager = new ConfigManager( { skipEnvLoad: true } );
             const validation = configManager.validateConfig();
 
             expect( validation.isValid ).toBe( true );
@@ -116,7 +138,7 @@ describe( 'ConfigManager', () => {
         test( 'should mask sensitive values', () => {
             process.env.AZURE_CLIENT_SECRET = 'super-secret-value';
 
-            configManager = new ConfigManager();
+            configManager = new ConfigManager( { skipEnvLoad: true } );
             const masked = configManager.getMaskedConfig();
 
             expect( masked.azure.clientSecret ).toBe( '***masked***' );

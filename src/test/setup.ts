@@ -1,7 +1,8 @@
 // Jest test setup
-import { config } from 'dotenv';
+import { config } from '@dotenvx/dotenvx';
 
-// Load test environment variables
+// Load test environment variables for non-config tests
+// Config tests manage their own environment isolation
 config( { path: '.env.test' } );
 
 // Global test setup
