@@ -1,6 +1,6 @@
 // Configuration Management for AWS Access Grants (aws-ag)
 import { config as dotenvxConfig } from '@dotenvx/dotenvx';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -80,7 +80,7 @@ export class ConfigManager {
     private loadConfiguration( skipEnvLoad = false ): ToolConfig {
         // Load environment variables first (unless skipped for testing)
         if ( !skipEnvLoad ) {
-            dotenvxConfig();
+            this.loadEnvironmentFiles();
         }
 
         // Start with default configuration
@@ -116,6 +116,59 @@ export class ConfigManager {
         this.configSources.push( 'environment variables' );
 
         return config;
+    }
+
+    /**
+     * Load environment files from multiple locations in priority order:
+     * 1. User home directory (~/.aws-ag/.env)
+     * 2. Current working directory (.env files)
+     * 3. System environment variables
+     *
+     * Supports encrypted .env files via dotenvx
+     */
+    private loadEnvironmentFiles(): void {
+        const envPaths = [
+            // User-specific config directory (highest priority for global config)
+            join( homedir(), '.aws-ag', '.env' ),
+            // Current working directory (for project-specific configs)
+            join( process.cwd(), '.env' ),
+            join( process.cwd(), '.env.local' )
+        ];
+
+        // Load environment files in order (later files override earlier ones)
+        for ( const envPath of envPaths ) {
+            if ( existsSync( envPath ) ) {
+                try {
+                    // dotenvx automatically handles encrypted files if .env.keys is present
+                    dotenvxConfig( {
+                        path: envPath,
+                        override: true // Allow later files to override earlier ones
+                    } );
+                    this.configSources.push( `env file (${envPath})` );
+
+                    // Check if this is an encrypted file
+                    const envContent = readFileSync( envPath, 'utf-8' );
+                    if ( envContent.includes( 'DOTENV_PUBLIC_KEY' ) ) {
+                        this.configSources.push( `encrypted env file (${envPath})` );
+                    }
+                } catch ( error ) {
+                    console.warn( `Warning: Failed to load environment file ${envPath}: ${error instanceof Error ? error.message : 'Unknown error'}` );
+
+                    // If it's an encrypted file, provide helpful error message
+                    try {
+                        const envContent = readFileSync( envPath, 'utf-8' );
+                        if ( envContent.includes( 'DOTENV_PUBLIC_KEY' ) ) {
+                            console.warn( `  This appears to be an encrypted .env file. Make sure .env.keys is available in the same directory.` );
+                        }
+                    } catch {
+                        // Ignore read errors for error message enhancement
+                    }
+                }
+            }
+        }
+
+        // System environment variables are automatically available via process.env
+        // No need to call dotenvxConfig() without a file path as it causes unnecessary warnings
     }
 
     /**
@@ -446,6 +499,114 @@ DEFAULT_SESSION_DURATION=PT1H
         }
 
         return masked;
+    }
+
+    /**
+     * Setup user configuration directory and files
+     */
+    setupUserConfig(): { success: boolean; message: string; paths: string[] } {
+        const userConfigDir = join( homedir(), '.aws-ag' );
+        const userConfigFile = join( userConfigDir, 'config.json' );
+        const userEnvFile = join( userConfigDir, '.env' );
+        const userKeysFile = join( userConfigDir, '.env.keys' );
+        const createdPaths: string[] = [];
+
+        try {
+            // Create user config directory
+            if ( !existsSync( userConfigDir ) ) {
+                mkdirSync( userConfigDir, { recursive: true } );
+                createdPaths.push( userConfigDir );
+            }
+
+            // Create config.json template if it doesn't exist
+            if ( !existsSync( userConfigFile ) ) {
+                writeFileSync( userConfigFile, this.createConfigTemplate() );
+                createdPaths.push( userConfigFile );
+            }
+
+            // Create .env template if it doesn't exist
+            if ( !existsSync( userEnvFile ) ) {
+                const envTemplate = this.createEnvTemplate();
+                writeFileSync( userEnvFile, envTemplate );
+                createdPaths.push( userEnvFile );
+            }
+
+            // Copy .env.keys from project if it exists and user doesn't have one
+            if ( !existsSync( userKeysFile ) ) {
+                const projectKeysFile = join( process.cwd(), '.env.keys' );
+                if ( existsSync( projectKeysFile ) ) {
+                    try {
+                        const keysContent = readFileSync( projectKeysFile, 'utf-8' );
+                        writeFileSync( userKeysFile, keysContent );
+                        createdPaths.push( userKeysFile );
+                    } catch ( error ) {
+                        console.warn( `Warning: Could not copy .env.keys file: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                    }
+                }
+            }
+
+            return {
+                success: true,
+                message: `User configuration directory setup complete at ${userConfigDir}`,
+                paths: createdPaths
+            };
+        } catch ( error ) {
+            return {
+                success: false,
+                message: `Failed to setup user configuration: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                paths: createdPaths
+            };
+        }
+    }
+
+    /**
+     * Get information about encryption support and status
+     */
+    getEncryptionInfo(): {
+        isSupported: boolean;
+        userEnvEncrypted: boolean;
+        projectEnvEncrypted: boolean;
+        userKeysExists: boolean;
+        projectKeysExists: boolean;
+        userConfigDir: string;
+    } {
+        const userConfigDir = join( homedir(), '.aws-ag' );
+        const userEnvFile = join( userConfigDir, '.env' );
+        const userKeysFile = join( userConfigDir, '.env.keys' );
+        const projectEnvFile = join( process.cwd(), '.env' );
+        const projectKeysFile = join( process.cwd(), '.env.keys' );
+
+        let userEnvEncrypted = false;
+        let projectEnvEncrypted = false;
+
+        // Check if user .env is encrypted
+        if ( existsSync( userEnvFile ) ) {
+            try {
+                const content = readFileSync( userEnvFile, 'utf-8' );
+                userEnvEncrypted = content.includes( 'DOTENV_PUBLIC_KEY' );
+            } catch {
+                // Ignore read errors
+            }
+        }
+
+        // Check if project .env is encrypted
+        if ( existsSync( projectEnvFile ) ) {
+            try {
+                const content = readFileSync( projectEnvFile, 'utf-8' );
+                projectEnvEncrypted = content.includes( 'DOTENV_PUBLIC_KEY' );
+            } catch {
+                // Ignore read errors
+            }
+        }
+
+        return {
+            isSupported: true, // dotenvx always supports encryption
+            userEnvEncrypted,
+            projectEnvEncrypted,
+            userKeysExists: existsSync( userKeysFile ),
+            projectKeysExists: existsSync( projectKeysFile ),
+            userConfigDir
+        };
     }
 }
 

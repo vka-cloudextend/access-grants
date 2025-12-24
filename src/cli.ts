@@ -83,8 +83,40 @@ program
     .option( '--sources', 'Show configuration sources' )
     .option( '--template', 'Generate configuration template' )
     .option( '--env-template', 'Generate environment variables template' )
+    .option( '--setup-global', 'Setup global user configuration directory and templates' )
     .action( async ( options ) => {
         try {
+            if ( options.setupGlobal ) {
+                console.log( 'Setting up global user configuration...' );
+                console.log( '=====================================' );
+
+                const result = configManager.setupUserConfig();
+
+                if ( result.success ) {
+                    console.log( `✅ ${result.message}` );
+
+                    if ( result.paths.length > 0 ) {
+                        console.log( '\nCreated files:' );
+                        result.paths.forEach( path => {
+                            console.log( `  📁 ${path}` );
+                        } );
+                    }
+
+                    console.log( '\n📝 Next steps:' );
+                    console.log( '1. Edit ~/.aws-ag/.env with your actual configuration values' );
+                    console.log( '2. Or edit ~/.aws-ag/config.json for JSON-based configuration' );
+                    console.log( '3. Run "aws-ag config --validate" to verify your setup' );
+                    console.log( '\n🔐 For enhanced security (optional):' );
+                    console.log( '4. Encrypt your global .env file:' );
+                    console.log( '   cd ~/.aws-ag && npx dotenvx encrypt' );
+                    console.log( '5. Keep the .env.keys file secure and backed up' );
+                    console.log( '\n💡 The global configuration will be used when running aws-ag from any directory' );
+                } else {
+                    console.error( `❌ ${result.message}` );
+                    process.exit( 1 );
+                }
+                return;
+            }
             if ( options.template ) {
                 console.log( 'Configuration template (config.json):' );
                 console.log( '=====================================' );
@@ -106,6 +138,21 @@ program
                 sources.forEach( ( source, index ) => {
                     console.log( `${index + 1}. ${source}` );
                 } );
+
+                // Show encryption information
+                const encryptionInfo = configManager.getEncryptionInfo();
+                console.log( '\n🔐 Encryption Status:' );
+                console.log( '===================' );
+                console.log( `User config encrypted: ${encryptionInfo.userEnvEncrypted ? '✅ Yes' : '❌ No'}` );
+                console.log( `Project config encrypted: ${encryptionInfo.projectEnvEncrypted ? '✅ Yes' : '❌ No'}` );
+                console.log( `User keys available: ${encryptionInfo.userKeysExists ? '✅ Yes' : '❌ No'}` );
+                console.log( `Project keys available: ${encryptionInfo.projectKeysExists ? '✅ Yes' : '❌ No'}` );
+
+                if ( encryptionInfo.userEnvEncrypted && !encryptionInfo.userKeysExists ) {
+                    console.log( '\n⚠️  Warning: User .env file is encrypted but .env.keys not found!' );
+                    console.log( `   Copy your .env.keys file to: ${encryptionInfo.userConfigDir}/.env.keys` );
+                }
+
                 return;
             }
 
