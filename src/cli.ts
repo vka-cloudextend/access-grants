@@ -536,7 +536,7 @@ program
         try {
             const orchestrator = createOrchestrator();
 
-            const operation = orchestrator.getOperationStatus( options.operationId );
+            const operation = await orchestrator.getOperationStatus( options.operationId );
             if ( !operation ) {
                 console.error( `Operation ${options.operationId} not found` );
                 process.exit( 1 );

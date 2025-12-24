@@ -111,7 +111,7 @@ export class ReportingService {
 
             // Clean up old data if retention policy is configured
             if ( this.config.reporting.retentionDays ) {
-                this.reporter.clearOldData( this.config.reporting.retentionDays );
+                await this.reporter.clearOldData( this.config.reporting.retentionDays );
             }
         } catch ( error ) {
             // eslint-disable-next-line no-console
@@ -389,8 +389,8 @@ export class ReportingService {
     /**
      * Get operation statistics
      */
-    getOperationStatistics() {
-        return this.reporter.getOperationStatistics();
+    async getOperationStatistics() {
+        return await this.reporter.getOperationStatistics();
     }
 
     /**
@@ -415,7 +415,7 @@ export class ReportingService {
 
                 // Clean up old data
                 if ( this.config.reporting.retentionDays ) {
-                    this.reporter.clearOldData( this.config.reporting.retentionDays );
+                    await this.reporter.clearOldData( this.config.reporting.retentionDays );
                 }
 
             } catch ( error ) {

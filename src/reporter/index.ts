@@ -4,6 +4,7 @@ import * as path from 'path';
 import { AWSClient } from '../clients/aws-client';
 import { AzureClient } from '../clients/azure-client';
 import { AssignmentOperation, GroupAssignment, PermissionSet } from '../types';
+import { OperationHistoryStorage } from '../storage/operation-history';
 
 export interface AssignmentSummary {
     totalAssignments: number;
@@ -61,11 +62,12 @@ export class ConfigurationReporter {
     private azureClient: AzureClient;
     private awsClient: AWSClient;
     private auditLog: AuditLogEntry[] = [];
-    private operationHistory: Map<string, AssignmentOperation> = new Map();
+    private operationHistoryStorage: OperationHistoryStorage;
 
-    constructor( azureClient: AzureClient, awsClient: AWSClient ) {
+    constructor( azureClient: AzureClient, awsClient: AWSClient, operationHistoryStorage?: OperationHistoryStorage ) {
         this.azureClient = azureClient;
         this.awsClient = awsClient;
+        this.operationHistoryStorage = operationHistoryStorage || new OperationHistoryStorage();
     }
 
     /**
@@ -97,9 +99,8 @@ export class ConfigurationReporter {
             }
 
             // Get recent operations (last 10)
-            const recentOperations = Array.from( this.operationHistory.values() )
-                .sort( ( a, b ) => b.startTime.getTime() - a.startTime.getTime() )
-                .slice( 0, 10 );
+            const recentOperationsResult = await this.operationHistoryStorage.getOperations( { limit: 10 } );
+            const recentOperations = recentOperationsResult.operations;
 
             return {
                 totalAssignments,
@@ -165,7 +166,7 @@ export class ConfigurationReporter {
                     accounts
                 },
                 assignments: groupAssignments,
-                operations: Array.from( this.operationHistory.values() )
+                operations: ( await this.operationHistoryStorage.getAllOperations() )
             };
 
             return config;
@@ -180,8 +181,8 @@ export class ConfigurationReporter {
      */
     async logOperation( operation: AssignmentOperation ): Promise<void> {
         try {
-            // Store operation in history
-            this.operationHistory.set( operation.operationId, operation );
+            // Store operation in persistent storage
+            await this.operationHistoryStorage.addOperation( operation );
 
             // Create audit log entry
             const auditEntry: AuditLogEntry = {
@@ -206,6 +207,7 @@ export class ConfigurationReporter {
             }
 
         } catch ( error ) {
+            // eslint-disable-next-line no-console
             console.error( `Failed to log operation ${operation.operationId}: ${error instanceof Error ? error.message : 'Unknown error'}` );
         }
     }
@@ -409,14 +411,14 @@ export class ConfigurationReporter {
     /**
      * Get operation statistics
      */
-    getOperationStatistics(): {
+    async getOperationStatistics(): Promise<{
         totalOperations: number;
         operationsByType: Record<string, number>;
         operationsByStatus: Record<string, number>;
         averageOperationDuration: number;
         recentFailures: AssignmentOperation[];
-    } {
-        const operations = Array.from( this.operationHistory.values() );
+    }> {
+        const operations = await this.operationHistoryStorage.getAllOperations();
 
         const operationsByType: Record<string, number> = {};
         const operationsByStatus: Record<string, number> = {};
@@ -457,17 +459,13 @@ export class ConfigurationReporter {
     /**
      * Clear old audit logs and operations
      */
-    clearOldData( olderThanDays: number = 30 ): void {
+    async clearOldData( olderThanDays: number = 30 ): Promise<void> {
         const cutoffDate = new Date( Date.now() - olderThanDays * 24 * 60 * 60 * 1000 );
 
         // Clear old audit logs
         this.auditLog = this.auditLog.filter( entry => entry.timestamp > cutoffDate );
 
-        // Clear old operations
-        for ( const [ operationId, operation ] of this.operationHistory.entries() ) {
-            if ( operation.startTime < cutoffDate ) {
-                this.operationHistory.delete( operationId );
-            }
-        }
+        // Clear old operations using the storage cleanup method
+        await this.operationHistoryStorage.cleanup();
     }
 }

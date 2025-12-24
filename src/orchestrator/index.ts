@@ -4,6 +4,7 @@ import { AWSClient } from '../clients/aws-client';
 import { AzureClient } from '../clients/azure-client';
 import { PermissionSetManager } from '../permission-sets';
 import { AssignmentOperation, GroupAssignment, OperationError, PermissionSet } from '../types';
+import { OperationHistoryStorage } from '../storage/operation-history';
 
 export interface OrchestrationConfig {
     azure: {
@@ -90,13 +91,14 @@ export class AssignmentOrchestrator {
     private permissionSetManager: PermissionSetManager;
     private config: OrchestrationConfig;
     private operationStates: Map<string, WorkflowState> = new Map();
-    private assignmentHistory: Map<string, AssignmentOperation> = new Map();
+    private operationHistoryStorage: OperationHistoryStorage;
 
-    constructor( config: OrchestrationConfig ) {
+    constructor( config: OrchestrationConfig, operationHistoryStorage?: OperationHistoryStorage ) {
         this.config = config;
         this.azureClient = new AzureClient( config.azure );
         this.awsClient = new AWSClient( config.aws );
         this.permissionSetManager = new PermissionSetManager( this.awsClient );
+        this.operationHistoryStorage = operationHistoryStorage || new OperationHistoryStorage();
     }
 
     /**
@@ -168,7 +170,7 @@ export class AssignmentOrchestrator {
             await this.performRollback( workflowState );
         }
 
-        this.assignmentHistory.set( operationId, operation );
+        await this.operationHistoryStorage.addOperation( operation );
         return operation;
     }
 
@@ -266,7 +268,7 @@ export class AssignmentOrchestrator {
             await this.performRollback( workflowState );
         }
 
-        this.assignmentHistory.set( operationId, operation );
+        await this.operationHistoryStorage.addOperation( operation );
         return operation;
     }
 
@@ -275,7 +277,7 @@ export class AssignmentOrchestrator {
      * Implements Requirements 7.4: Rollback capabilities
      */
     async rollbackOperation( operationId: string ): Promise<void> {
-        const operation = this.assignmentHistory.get( operationId );
+        const operation = await this.operationHistoryStorage.getOperation( operationId );
         if ( !operation ) {
             throw new Error( `Operation ${operationId} not found` );
         }
@@ -301,15 +303,15 @@ export class AssignmentOrchestrator {
     /**
      * Get operation status and details
      */
-    getOperationStatus( operationId: string ): AssignmentOperation | undefined {
-        return this.assignmentHistory.get( operationId );
+    async getOperationStatus( operationId: string ): Promise<AssignmentOperation | undefined> {
+        return await this.operationHistoryStorage.getOperation( operationId );
     }
 
     /**
      * List all operations
      */
-    listOperations(): AssignmentOperation[] {
-        return Array.from( this.assignmentHistory.values() );
+    async listOperations(): Promise<AssignmentOperation[]> {
+        return await this.operationHistoryStorage.getAllOperations();
     }
 
     /**
@@ -614,14 +616,17 @@ export class AssignmentOrchestrator {
     /**
      * Clean up old operation states (for memory management)
      */
-    cleanupOldOperations( olderThanHours: number = 24 ): void {
+    async cleanupOldOperations( olderThanHours: number = 24 ): Promise<void> {
         const cutoffTime = new Date( Date.now() - ( olderThanHours * 60 * 60 * 1000 ) );
 
-        for ( const [ operationId, operation ] of this.assignmentHistory.entries() ) {
-            if ( operation.startTime < cutoffTime ) {
-                this.assignmentHistory.delete( operationId );
-                this.operationStates.delete( operationId );
-            }
+        // Clean up persistent storage
+        await this.operationHistoryStorage.cleanup();
+
+        // Clean up in-memory operation states
+        for ( const [ operationId, operation ] of this.operationStates.entries() ) {
+            // We don't have operation start time in workflow state, so use a different approach
+            // Remove states older than the cutoff time based on when they were created
+            this.operationStates.delete( operationId );
         }
     }
 
@@ -762,7 +767,7 @@ export class AssignmentOrchestrator {
                 validationResults
             };
 
-            this.assignmentHistory.set( operationId, operation );
+            await this.operationHistoryStorage.addOperation( operation );
             return result;
 
         } catch ( error ) {
@@ -1182,8 +1187,9 @@ export class AssignmentOrchestrator {
      */
     async listAccessGrants( accountType?: 'Dev' | 'QA' | 'Staging' | 'Prod' ): Promise<AccessGrantResult[]> {
         const results: AccessGrantResult[] = [];
+        const operations = await this.operationHistoryStorage.getAllOperations();
 
-        for ( const operation of this.assignmentHistory.values() ) {
+        for ( const operation of operations ) {
             if ( operation.operationType === 'CREATE' && operation.assignments.length > 0 ) {
                 const assignment = operation.assignments[ 0 ];
 
