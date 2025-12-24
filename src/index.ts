@@ -5,6 +5,7 @@ export * from './clients';
 export * from './orchestrator';
 export * from './validator';
 export * from './reporter';
+export * from './integration';
 
 // Explicit exports to avoid conflicts
 export {
@@ -33,3 +34,15 @@ export {
     OperationError as ErrorOperationError,
     BulkOperationError
 } from './errors';
+
+// Integration layer exports
+export {
+    systemIntegration,
+    getOrchestrator,
+    getReportingService,
+    getValidationService,
+    getSystemStatus,
+    performHealthCheck,
+    type SystemStatus,
+    type IntegrationConfig
+} from './integration';

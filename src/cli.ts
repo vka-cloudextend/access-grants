@@ -6,6 +6,7 @@ import { AWSClient } from './clients/aws-client';
 import { AssignmentOrchestrator, OrchestrationConfig, AccessGrantRequest } from './orchestrator';
 import { configManager, validateConfig } from './config';
 import { ErrorHandler, ValidationUtils } from './errors';
+import { systemIntegration, getOrchestrator, getReportingService, getValidationService } from './integration';
 
 const program = new Command();
 
@@ -57,9 +58,8 @@ function getConfig(): OrchestrationConfig {
 }
 
 // Helper to create orchestrator instance
-function createOrchestrator(): AssignmentOrchestrator {
-    const config = getConfig();
-    return new AssignmentOrchestrator( config );
+async function createOrchestrator(): Promise<AssignmentOrchestrator> {
+    return await getOrchestrator();
 }
 
 // Helper to create Azure client
@@ -258,7 +258,7 @@ program
     .option( '--dry-run', 'Show what would be done without making changes' )
     .action( async ( options ) => {
         try {
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
 
             if ( options.dryRun ) {
                 console.log( 'DRY RUN - No changes will be made' );
@@ -312,7 +312,7 @@ program
                 throw new Error( 'Assignment file must contain an array of assignments' );
             }
 
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
 
             if ( options.dryRun ) {
                 console.log( 'DRY RUN - No changes will be made' );
@@ -399,76 +399,114 @@ program
     .description( 'Test assignment functionality' )
     .option( '-g, --group-id <groupId>', 'Validate specific group assignment' )
     .option( '-a, --account <accountId>', 'Validate assignments for specific account' )
+    .option( '--format <format>', 'Output format (table|json)', 'table' )
     .action( async ( options ) => {
         try {
-            const awsClient = createAWSClient();
-            const azureClient = createAzureClient();
+            const validationService = await getValidationService();
+
+            if ( !validationService ) {
+                console.error( 'Validation service not available. Please check configuration.' );
+                process.exit( 1 );
+            }
 
             if ( options.groupId ) {
                 // Validate specific group
-                console.log( `Validating group ${options.groupId}...` );
+                console.log( `🔍 Validating group ${options.groupId}...` );
 
-                const validation = await azureClient.validateGroupDetailed( options.groupId );
-                console.log( `\nAzure Group Validation: ${validation.isValid ? 'PASS' : 'FAIL'}` );
-                if ( !validation.isValid ) {
-                    console.log( `Errors: ${validation.errors.join( ', ' )}` );
+                const syncStatus = await validationService.checkGroupSynchronizationStatus( options.groupId );
+
+                if ( options.format === 'json' ) {
+                    console.log( JSON.stringify( syncStatus, null, 2 ) );
+                    return;
                 }
 
-                const syncStatus = await awsClient.checkGroupSynchronizationStatus( options.groupId );
-                console.log( `AWS Synchronization: ${syncStatus.isSynced ? 'SYNCED' : 'NOT SYNCED'}` );
+                console.log( `\n📊 Group Synchronization Status:` );
+                console.log( `Azure Group ID: ${syncStatus.azureGroupId}` );
+                console.log( `Azure Group Name: ${syncStatus.azureGroupName}` );
+                console.log( `Synchronized: ${syncStatus.isSynced ? '✅' : '❌'}` );
+
                 if ( syncStatus.awsGroupId ) {
                     console.log( `AWS Group ID: ${syncStatus.awsGroupId}` );
                 }
 
-                // Check assignments
-                const assignments = await awsClient.listAccountAssignments();
-                const groupAssignments = assignments.filter( a => a.principalId === options.groupId );
-                console.log( `Active Assignments: ${groupAssignments.length}` );
+                if ( syncStatus.lastSyncTime ) {
+                    console.log( `Last Sync: ${syncStatus.lastSyncTime.toISOString()}` );
+                }
 
-                groupAssignments.forEach( assignment => {
-                    console.log( `  - Account: ${assignment.accountId}, Permission Set: ${assignment.permissionSetArn}` );
-                } );
+                console.log( `\n👥 Member Count:` );
+                console.log( `Azure: ${syncStatus.memberCount.azure}` );
+                if ( syncStatus.memberCount.aws !== undefined ) {
+                    console.log( `AWS: ${syncStatus.memberCount.aws}` );
+                }
+
+                if ( syncStatus.syncErrors.length > 0 ) {
+                    console.log( `\n❌ Sync Errors:` );
+                    syncStatus.syncErrors.forEach( ( error, index ) => {
+                        console.log( `  ${index + 1}. ${error}` );
+                    } );
+                }
 
             } else if ( options.account ) {
                 // Validate assignments for specific account
-                console.log( `Validating assignments for account ${options.account}...` );
+                console.log( `🔍 Validating assignments for account ${options.account}...` );
 
+                const awsClient = createAWSClient();
                 const assignments = await awsClient.getAccountAssignmentsForAccount( options.account );
-                console.log( `\nFound ${assignments.length} assignments` );
+
+                console.log( `\n📊 Found ${assignments.length} assignments` );
 
                 for ( const assignment of assignments ) {
-                    console.log( `\nValidating assignment: ${assignment.principalId}` );
-
                     if ( assignment.principalType === 'GROUP' ) {
-                        const syncStatus = await awsClient.checkGroupSynchronizationStatus( assignment.principalId );
-                        console.log( `  Sync Status: ${syncStatus.isSynced ? 'SYNCED' : 'NOT SYNCED'}` );
-                    }
+                        console.log( `\n🔍 Validating group assignment: ${assignment.principalId}` );
 
-                    console.log( `  Status: ${assignment.status}` );
+                        const syncStatus = await validationService.checkGroupSynchronizationStatus( assignment.principalId );
+                        console.log( `  Sync Status: ${syncStatus.isSynced ? '✅ SYNCED' : '❌ NOT SYNCED'}` );
+                        console.log( `  Assignment Status: ${assignment.status}` );
+
+                        if ( syncStatus.syncErrors.length > 0 ) {
+                            console.log( `  Errors: ${syncStatus.syncErrors.join( ', ' )}` );
+                        }
+                    }
                 }
 
             } else {
-                // General validation
-                console.log( 'Performing general assignment validation...' );
+                // General validation using validation service
+                console.log( '🔍 Performing comprehensive assignment validation...' );
 
-                const assignments = await awsClient.listAccountAssignments();
-                console.log( `\nTotal assignments: ${assignments.length}` );
+                const validationSummary = await validationService.validateAllAssignments();
 
-                const groupAssignments = assignments.filter( a => a.principalType === 'GROUP' );
-                console.log( `Group assignments: ${groupAssignments.length}` );
-
-                let syncedGroups = 0;
-                for ( const assignment of groupAssignments ) {
-                    const syncStatus = await awsClient.checkGroupSynchronizationStatus( assignment.principalId );
-                    if ( syncStatus.isSynced ) {
-                        syncedGroups++;
-                    }
+                if ( options.format === 'json' ) {
+                    console.log( JSON.stringify( validationSummary, null, 2 ) );
+                    return;
                 }
 
-                console.log( `Synced groups: ${syncedGroups}/${groupAssignments.length}` );
+                console.log( `\n📊 Validation Summary:` );
+                console.log( `Total Assignments: ${validationSummary.totalAssignments}` );
+                console.log( `Valid Assignments: ${validationSummary.validAssignments} ✅` );
+                console.log( `Invalid Assignments: ${validationSummary.invalidAssignments} ❌` );
 
-                if ( syncedGroups < groupAssignments.length ) {
-                    console.log( '\nWarning: Some groups are not properly synchronized' );
+                if ( validationSummary.issues.length > 0 ) {
+                    console.log( `\n⚠️  Issues Found:` );
+                    validationSummary.issues.forEach( ( issue, index ) => {
+                        console.log( `\n${index + 1}. Assignment Issue:` );
+                        console.log( `   Group: ${issue.assignment.azureGroupId}` );
+                        console.log( `   Account: ${issue.assignment.awsAccountId}` );
+
+                        if ( issue.errors.length > 0 ) {
+                            console.log( `   Errors:` );
+                            issue.errors.forEach( error => console.log( `     - ${error}` ) );
+                        }
+
+                        if ( issue.warnings.length > 0 ) {
+                            console.log( `   Warnings:` );
+                            issue.warnings.forEach( warning => console.log( `     - ${warning}` ) );
+                        }
+                    } );
+                }
+
+                if ( validationSummary.invalidAssignments > 0 ) {
+                    console.log( `\n💡 Run with --group-id <id> to get detailed validation for specific groups` );
+                    process.exit( 1 );
                 }
             }
         } catch ( error ) {
@@ -482,10 +520,12 @@ program
     .description( 'Export current configuration' )
     .option( '-o, --output <file>', 'Output file (default: stdout)' )
     .option( '--include-assignments', 'Include current assignments in export' )
+    .option( '--include-reports', 'Include system reports in export' )
     .action( async ( options ) => {
         try {
             const config = getConfig();
             const awsClient = createAWSClient();
+            const reportingService = await getReportingService();
 
             const exportData: any = {
                 timestamp: new Date().toISOString(),
@@ -512,12 +552,40 @@ program
                 exportData.permissionSets = permissionSets;
             }
 
+            // Enhanced export with reporting service
+            if ( options.includeReports && reportingService ) {
+                try {
+                    console.log( '📊 Including system reports in export...' );
+
+                    const [ assignmentReport, healthReport ] = await Promise.all( [
+                        reportingService.generateAssignmentSummariesAndReports(),
+                        reportingService.generateSystemHealthReport()
+                    ] );
+
+                    exportData.reports = {
+                        assignmentSummary: assignmentReport.summary,
+                        systemHealth: healthReport,
+                        generatedAt: new Date().toISOString()
+                    };
+
+                    console.log( '✅ System reports included in export' );
+                } catch ( error ) {
+                    console.warn( `⚠️  Failed to include reports: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
+            } else if ( options.includeReports ) {
+                console.warn( '⚠️  Reporting service not available, skipping reports' );
+            }
+
             const output = JSON.stringify( exportData, null, 2 );
 
             if ( options.output ) {
                 const fs = await import( 'fs/promises' );
                 await fs.writeFile( options.output, output );
-                console.log( `Configuration exported to ${options.output}` );
+                console.log( `✅ Configuration exported to ${options.output}` );
+
+                if ( exportData.reports ) {
+                    console.log( `📊 Export includes system reports and health data` );
+                }
             } else {
                 console.log( output );
             }
@@ -534,7 +602,7 @@ program
     .option( '--confirm', 'Confirm rollback without prompting' )
     .action( async ( options ) => {
         try {
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
 
             const operation = await orchestrator.getOperationStatus( options.operationId );
             if ( !operation ) {
@@ -601,7 +669,13 @@ program
             console.log( `Validating access grant: ${groupName}` );
             console.log( '=======================================' );
 
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
+            const validationService = await getValidationService();
+
+            if ( !validationService ) {
+                console.warn( '⚠️  Validation service not available, using basic validation' );
+            }
+
             const validation = await orchestrator.validateAccessGrant( groupName );
 
             if ( options.format === 'json' ) {
@@ -628,6 +702,19 @@ program
                 validation.azureGroup.errors.forEach( ( error: string ) => {
                     console.log( `    ❌ ${error}` );
                 } );
+            }
+
+            // Enhanced validation with validation service
+            if ( validationService && validation.azureGroup.exists ) {
+                try {
+                    console.log( '\n🔄 Enhanced Synchronization Analysis:' );
+                    // Note: This would need the actual Azure group ID from the validation
+                    // For now, we'll show that the service is available but skip the detailed check
+                    console.log( '  Enhanced validation service available ✅' );
+                    console.log( '  (Detailed sync analysis requires group ID from Azure)' );
+                } catch ( error ) {
+                    console.log( `  Enhanced validation failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
             }
 
             // Synchronization Status
@@ -745,7 +832,7 @@ program
                 ValidationUtils.validateAccountType( accountType );
             }
 
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
             const accessGrants = await orchestrator.listAccessGrants( accountType );
 
             if ( options.format === 'json' ) {
@@ -940,7 +1027,7 @@ program
             console.log( `Creating access grant: ${groupName}` );
             console.log( '======================================' );
 
-            const orchestrator = createOrchestrator();
+            const orchestrator = await createOrchestrator();
             const result = await orchestrator.createAccessGrant( request );
 
             console.log( '\n✅ Access Grant Created Successfully!' );
@@ -966,6 +1053,201 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Creating access grant' );
+        }
+    } );
+
+// health command - System health check
+program
+    .command( 'health' )
+    .description( 'Check system health and component status' )
+    .option( '--detailed', 'Show detailed health information' )
+    .option( '--format <format>', 'Output format (table|json)', 'table' )
+    .action( async ( options ) => {
+        try {
+            console.log( '🏥 Performing system health check...' );
+
+            const healthCheck = await systemIntegration.performHealthCheck();
+            const stats = await systemIntegration.getIntegrationStatistics();
+
+            if ( options.format === 'json' ) {
+                console.log( JSON.stringify( {
+                    health: healthCheck,
+                    statistics: stats
+                }, null, 2 ) );
+                return;
+            }
+
+            // Table format
+            console.log( '\n🏥 System Health Report' );
+            console.log( '======================' );
+            console.log( `Overall Status: ${healthCheck.healthy ? '✅ HEALTHY' : '❌ UNHEALTHY'}` );
+            console.log( `Uptime: ${Math.round( stats.uptime / 1000 / 60 )} minutes` );
+            console.log( `Operations Processed: ${stats.operationsProcessed}` );
+            console.log( `Errors Encountered: ${stats.errorsEncountered}` );
+
+            console.log( '\n📊 Component Status:' );
+            console.log( `Orchestrator: ${healthCheck.status.orchestrator.initialized ? '✅' : '❌'} (${healthCheck.status.orchestrator.operationsCount} operations)` );
+            console.log( `Reporting: ${healthCheck.status.reporting.initialized ? '✅' : '❌'}` );
+            console.log( `Validation: ${healthCheck.status.validation.initialized ? '✅' : '❌'}` );
+            console.log( `Storage: ${healthCheck.status.storage.initialized ? '✅' : '❌'} (${healthCheck.status.storage.operationsStored} stored)` );
+
+            if ( options.detailed ) {
+                console.log( '\n💾 Memory Usage:' );
+                console.log( `RSS: ${Math.round( stats.memoryUsage.rss / 1024 / 1024 )}MB` );
+                console.log( `Heap Used: ${Math.round( stats.memoryUsage.heapUsed / 1024 / 1024 )}MB` );
+                console.log( `Heap Total: ${Math.round( stats.memoryUsage.heapTotal / 1024 / 1024 )}MB` );
+                console.log( `External: ${Math.round( stats.memoryUsage.external / 1024 / 1024 )}MB` );
+
+                // Show component errors if any
+                const allErrors = [
+                    ...healthCheck.status.orchestrator.errors,
+                    ...healthCheck.status.reporting.errors,
+                    ...healthCheck.status.validation.errors,
+                    ...healthCheck.status.storage.errors
+                ];
+
+                if ( allErrors.length > 0 ) {
+                    console.log( '\n❌ Component Errors:' );
+                    allErrors.forEach( ( error, index ) => {
+                        console.log( `  ${index + 1}. ${error}` );
+                    } );
+                }
+            }
+
+            if ( healthCheck.recommendations.length > 0 ) {
+                console.log( '\n💡 Recommendations:' );
+                healthCheck.recommendations.forEach( ( rec, index ) => {
+                    console.log( `  ${index + 1}. ${rec}` );
+                } );
+            }
+
+            if ( !healthCheck.healthy ) {
+                process.exit( 1 );
+            }
+
+        } catch ( error ) {
+            ErrorHandler.handleError( error, 'Health check' );
+        }
+    } );
+
+// reports command - Generate system reports
+program
+    .command( 'reports' )
+    .description( 'Generate comprehensive system reports' )
+    .option( '--assignment-report', 'Generate assignment summary report' )
+    .option( '--audit-report', 'Generate audit log report' )
+    .option( '--health-report', 'Generate system health report' )
+    .option( '--all', 'Generate all available reports' )
+    .option( '--format <format>', 'Output format (table|json)', 'table' )
+    .option( '-o, --output <directory>', 'Output directory for report files' )
+    .action( async ( options ) => {
+        try {
+            const reportingService = await getReportingService();
+
+            if ( !reportingService ) {
+                console.error( '❌ Reporting service not available. Please check configuration.' );
+                process.exit( 1 );
+            }
+
+            const generateAll = options.all || ( !options.assignmentReport && !options.auditReport && !options.healthReport );
+
+            console.log( '📊 Generating system reports...' );
+
+            // Assignment Report
+            if ( options.assignmentReport || generateAll ) {
+                try {
+                    console.log( '\n📋 Generating assignment report...' );
+                    const assignmentReport = await reportingService.generateAssignmentSummariesAndReports();
+
+                    if ( options.format === 'json' ) {
+                        console.log( JSON.stringify( assignmentReport.summary, null, 2 ) );
+                    } else {
+                        console.log( '\n📊 Assignment Summary:' );
+                        console.log( `Total Assignments: ${assignmentReport.summary.totalAssignments}` );
+                        console.log( `Total Assignments: ${assignmentReport.summary.totalAssignments}` );
+                        console.log( `Active Assignments: ${assignmentReport.summary.activeAssignments}` );
+                        console.log( `Failed Assignments: ${assignmentReport.summary.failedAssignments}` );
+
+                        if ( assignmentReport.exportPath ) {
+                            console.log( `📄 Detailed report saved to: ${assignmentReport.exportPath}` );
+                        }
+                    }
+                } catch ( error ) {
+                    console.error( `❌ Assignment report failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
+            }
+
+            // Health Report
+            if ( options.healthReport || generateAll ) {
+                try {
+                    console.log( '\n🏥 Generating system health report...' );
+                    const healthReport = await reportingService.generateSystemHealthReport();
+
+                    if ( options.format === 'json' ) {
+                        console.log( JSON.stringify( healthReport, null, 2 ) );
+                    } else {
+                        console.log( '\n🏥 System Health Status:' );
+                        console.log( `Overall Health: ${healthReport.overallHealth}` );
+
+                        console.log( '\n🔗 Azure Connectivity:' );
+                        console.log( `  Connected: ${healthReport.azureHealth.connected ? '✅' : '❌'}` );
+                        console.log( `  Groups Found: ${healthReport.azureHealth.groupCount}` );
+                        if ( healthReport.azureHealth.errors.length > 0 ) {
+                            console.log( `  Errors: ${healthReport.azureHealth.errors.join( ', ' )}` );
+                        }
+
+                        console.log( '\n☁️  AWS Connectivity:' );
+                        console.log( `  Connected: ${healthReport.awsHealth.connected ? '✅' : '❌'}` );
+                        console.log( `  Permission Sets: ${healthReport.awsHealth.permissionSetCount}` );
+                        console.log( `  Accounts: ${healthReport.awsHealth.accountCount}` );
+                        console.log( `  Assignments: ${healthReport.awsHealth.assignmentCount}` );
+                        if ( healthReport.awsHealth.errors.length > 0 ) {
+                            console.log( `  Errors: ${healthReport.awsHealth.errors.join( ', ' )}` );
+                        }
+
+                        console.log( '\n🔄 Synchronization Health:' );
+                        console.log( `  Synced Groups: ${healthReport.synchronizationHealth.syncedGroups}` );
+                        console.log( `  Unsynced Groups: ${healthReport.synchronizationHealth.unsyncedGroups}` );
+                        if ( healthReport.synchronizationHealth.syncErrors.length > 0 ) {
+                            console.log( `  Sync Errors: ${healthReport.synchronizationHealth.syncErrors.length}` );
+                        }
+                    }
+                } catch ( error ) {
+                    console.error( `❌ Health report failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
+            }
+
+            // Audit Report
+            if ( options.auditReport || generateAll ) {
+                try {
+                    console.log( '\n📜 Generating audit report...' );
+                    const auditReport = await reportingService.generateAuditReport();
+
+                    if ( options.format === 'json' ) {
+                        console.log( JSON.stringify( auditReport.summary, null, 2 ) );
+                    } else {
+                        console.log( '\n📜 Audit Summary:' );
+                        console.log( `Total Entries: ${auditReport.summary.totalEntries}` );
+                        console.log( `Success Rate: ${auditReport.summary.successRate.toFixed( 1 )}%` );
+                        console.log( `Failure Rate: ${auditReport.summary.failureRate.toFixed( 1 )}%` );
+                        console.log( `Time Range: ${auditReport.summary.timeRange.start.toISOString()} - ${auditReport.summary.timeRange.end.toISOString()}` );
+
+                        if ( Object.keys( auditReport.summary.operationsByType ).length > 0 ) {
+                            console.log( '\n📊 Operations by Type:' );
+                            Object.entries( auditReport.summary.operationsByType ).forEach( ( [ type, count ] ) => {
+                                console.log( `  ${type}: ${count}` );
+                            } );
+                        }
+                    }
+                } catch ( error ) {
+                    console.error( `❌ Audit report failed: ${error instanceof Error ? error.message : 'Unknown error'}` );
+                }
+            }
+
+            console.log( '\n✅ Report generation completed' );
+
+        } catch ( error ) {
+            ErrorHandler.handleError( error, 'Generating reports' );
         }
     } );
 
