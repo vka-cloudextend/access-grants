@@ -31,10 +31,15 @@ export class AWSClient {
     private identityStoreClient: IdentitystoreClient;
     private organizationsClient: OrganizationsClient;
 
-    constructor( private config: { region: string; identityCenterInstanceArn: string; identityStoreId: string } ) {
-        this.ssoAdminClient = new SSOAdminClient( { region: config.region } );
-        this.identityStoreClient = new IdentitystoreClient( { region: config.region } );
-        this.organizationsClient = new OrganizationsClient( { region: config.region } );
+    constructor( private config: { region: string; identityCenterInstanceArn: string; identityStoreId: string; profile?: string } ) {
+        const clientConfig = {
+            region: config.region,
+            ...( config.profile && { profile: config.profile } )
+        };
+
+        this.ssoAdminClient = new SSOAdminClient( clientConfig );
+        this.identityStoreClient = new IdentitystoreClient( clientConfig );
+        this.organizationsClient = new OrganizationsClient( clientConfig );
     }
 
     async listPermissionSets(): Promise<PermissionSet[]> {
