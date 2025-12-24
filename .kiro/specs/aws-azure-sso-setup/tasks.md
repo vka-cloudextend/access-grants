@@ -199,7 +199,7 @@ Implementation of a TypeScript-based CLI tool that helps manage Azure AD securit
     - Validate end-to-end workflow with mock data
     - _Requirements: All requirements_
 
-- [ ] 10. Final checkpoint - Ensure tool works end-to-end
+- [x] 10. Final checkpoint - Ensure tool works end-to-end
   - Test complete workflows with real Azure AD and AWS environments
   - Verify all CLI commands function correctly
   - Ensure error handling works as expected

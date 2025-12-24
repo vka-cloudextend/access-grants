@@ -294,6 +294,9 @@ program
             }
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Assigning group' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -346,6 +349,9 @@ program
             }
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Bulk assignment' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -511,6 +517,9 @@ program
             }
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Validating assignments' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -591,6 +600,9 @@ program
             }
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Exporting configuration' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -645,6 +657,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Performing rollback' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -813,6 +828,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Validating access grant' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -908,6 +926,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Listing access grants' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -1053,6 +1074,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Creating access grant' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -1127,6 +1151,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Health check' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
@@ -1248,6 +1275,9 @@ program
 
         } catch ( error ) {
             ErrorHandler.handleError( error, 'Generating reports' );
+        } finally {
+            // Ensure the process exits cleanly
+            process.exit( 0 );
         }
     } );
 
