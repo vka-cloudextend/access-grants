@@ -38,3 +38,5 @@ Thumbs.db
 
 # AWS credentials (should use IAM roles instead)
 .aws/credentials
+
+.env.keys
