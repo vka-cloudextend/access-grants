@@ -2,6 +2,7 @@
 import { Client } from '@microsoft/microsoft-graph-client';
 import { ConfidentialClientApplication } from '@azure/msal-node';
 import { AzureGroup } from '../types';
+import { DEFAULT_OWNER_EMAILS } from '../constants/default-owners';
 
 interface AzureConfig {
     tenantId: string;
@@ -622,8 +623,9 @@ export class AzureClient {
     /**
      * Create a new Azure AD security group
      * Implements Requirements 1.1: Create Azure AD security groups
+     * Implements Requirements 2.1, 2.2: Use default owners when none provided
      */
-    async createSecurityGroup( displayName: string, description?: string, mailNickname?: string ): Promise<{
+    async createSecurityGroup( displayName: string, description?: string, mailNickname?: string, owners?: string[] ): Promise<{
         success: boolean;
         groupId?: string;
         group?: {
@@ -674,6 +676,14 @@ export class AzureClient {
                     description: response.description,
                     mailNickname: response.mailNickname
                 };
+
+                // Add owners to the newly created group
+                const ownersResult = await this.addGroupOwners( response.id, owners );
+                if ( ownersResult.failedAdditions.length > 0 ) {
+                    for ( const failed of ownersResult.failedAdditions ) {
+                        result.errors.push( `Failed to add owner ${failed.user}: ${failed.error}` );
+                    }
+                }
             } else {
                 result.errors.push( 'Group creation failed - no group ID returned' );
             }
@@ -719,6 +729,56 @@ export class AzureClient {
 
         } catch ( error ) {
             result.errors.push( `Failed to add group owner: ${error instanceof Error ? error.message : 'Unknown error'}` );
+        }
+
+        return result;
+    }
+
+    /**
+     * Add multiple owners to an Azure AD group
+     * Implements Requirements 2.1, 2.2: Use default owners when none provided
+     */
+    async addGroupOwners( groupId: string, userIdsOrEmails?: string[] ): Promise<{
+        success: boolean;
+        successfulAdditions: string[];
+        failedAdditions: { user: string; error: string }[];
+        errors: string[];
+    }> {
+        const result = {
+            success: false,
+            successfulAdditions: [] as string[],
+            failedAdditions: [] as { user: string; error: string }[],
+            errors: [] as string[]
+        };
+
+        try {
+            // Resolve owner emails - use provided or fall back to defaults
+            const ownerEmails = this.resolveOwnerEmails( userIdsOrEmails );
+
+            // Add all owner emails
+            for ( const ownerEmail of ownerEmails ) {
+                try {
+                    const ownerResult = await this.addGroupOwner( groupId, ownerEmail );
+                    if ( ownerResult.success ) {
+                        result.successfulAdditions.push( ownerEmail );
+                    } else {
+                        result.failedAdditions.push( {
+                            user: ownerEmail,
+                            error: ownerResult.errors.join( ', ' )
+                        } );
+                    }
+                } catch ( error ) {
+                    result.failedAdditions.push( {
+                        user: ownerEmail,
+                        error: error instanceof Error ? error.message : 'Unknown error'
+                    } );
+                }
+            }
+
+            result.success = result.successfulAdditions.length > 0;
+
+        } catch ( error ) {
+            result.errors.push( `Failed to add group owners: ${error instanceof Error ? error.message : 'Unknown error'}` );
         }
 
         return result;
@@ -814,6 +874,17 @@ export class AzureClient {
         }
 
         return result;
+    }
+
+    /**
+     * Resolve owner emails by using provided emails or falling back to defaults
+     * Implements Requirements 2.1, 2.2, 2.3: Use default owners when none provided
+     */
+    private resolveOwnerEmails( providedOwners?: string[] ): string[] {
+        if ( providedOwners && providedOwners.length > 0 ) {
+            return providedOwners;
+        }
+        return DEFAULT_OWNER_EMAILS;
     }
 
     /**
