@@ -22,5 +22,8 @@ module.exports = {
         'html'
     ],
     setupFilesAfterEnv: [ '<rootDir>/src/test/setup.ts' ],
-    testTimeout: 30000
+    testTimeout: 30000,
+    transformIgnorePatterns: [
+        'node_modules/(?!(uuid)/)'
+    ]
 };

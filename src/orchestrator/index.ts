@@ -983,7 +983,8 @@ export class AssignmentOrchestrator {
             }
 
             // Wait for provisioning to complete with timeout
-            const maxWaitTime = 300000; // 5 minutes
+            const maxWaitTime = ( this.config.retryAttempts || 30 ) * ( this.config.retryDelayMs || 10000 ); // Default 5 minutes
+            const retryDelayMs = this.config.retryDelayMs || 10000; // Default 10 seconds
             const startTime = Date.now();
 
             while ( Date.now() - startTime < maxWaitTime ) {
@@ -999,7 +1000,7 @@ export class AssignmentOrchestrator {
                     throw new Error( `Provisioning failed: ${statusResult.errors.join( ', ' )}` );
                 }
 
-                await new Promise( resolve => setTimeout( resolve, 10000 ) ); // Wait 10 seconds
+                await new Promise( resolve => setTimeout( resolve, retryDelayMs ) );
             }
 
             workflowState.completedSteps.push( 'PROVISIONING' );
@@ -1023,7 +1024,8 @@ export class AssignmentOrchestrator {
         workflowState.currentStep = 'AWS_SYNC_VERIFICATION';
 
         try {
-            const maxRetries = 12; // 2 minutes with 10-second intervals
+            const maxRetries = this.config.retryAttempts || 12; // Default 2 minutes with 10-second intervals
+            const retryDelayMs = this.config.retryDelayMs || 10000; // Default 10 seconds
             let retries = 0;
 
             while ( retries < maxRetries ) {
@@ -1035,7 +1037,7 @@ export class AssignmentOrchestrator {
 
                 retries++;
                 if ( retries < maxRetries ) {
-                    await new Promise( resolve => setTimeout( resolve, 10000 ) ); // Wait 10 seconds
+                    await new Promise( resolve => setTimeout( resolve, retryDelayMs ) );
                 }
             }
 
