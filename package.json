@@ -7,7 +7,7 @@
         "aws-ag": "dist/cli.js"
     },
     "scripts": {
-        "build": "tsc",
+        "build": "tsc && chmod +x dist/cli.js",
         "dev": "ts-node src/cli.ts",
         "start": "node dist/cli.js",
         "clean": "rm -rf dist",
