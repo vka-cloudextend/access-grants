@@ -996,11 +996,11 @@ program
     .action( async ( options ) => {
         try {
             // Parse and validate inputs
-            const accountType = options.accountType as 'Dev' | 'QA' | 'Staging' | 'Prod';
+            const accountType = options.account as 'Dev' | 'QA' | 'Staging' | 'Prod';
             ValidationUtils.validateAccountType( accountType );
             ValidationUtils.validateTicketId( options.ticketId );
 
-            const owners = options.owners.split( ',' ).map( ( email: string ) => email.trim() );
+            const owners = options.owners ? options.owners.split( ',' ).map( ( email: string ) => email.trim() ) : [];
             const members = options.members.split( ',' ).map( ( email: string ) => email.trim() );
 
             // Validate email formats
