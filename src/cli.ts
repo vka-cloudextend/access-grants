@@ -983,10 +983,10 @@ program
 program
     .command( 'create-access' )
     .description( 'Create standardized access grant following CE-AWS-<Account>-<TicketId> naming convention' )
-    .requiredOption( '-t, --account-type <type>', 'Account type (Dev|QA|Staging|Prod)' )
-    .requiredOption( '--ticket-id <ticketId>', 'Ticket ID in format AG-XXX or AG-XXXX' )
-    .requiredOption( '--owners <owners>', 'Comma-separated list of owner email addresses' )
+    .requiredOption( '-a, --account <type>', 'Account type (Dev|QA|Staging|Prod)' )
+    .requiredOption( '-t, --ticket-id <ticketId>', 'Ticket ID in format AG-XXX or AG-XXXX' )
     .requiredOption( '--members <members>', 'Comma-separated list of member email addresses' )
+    .option( '--owners <owners>', 'Comma-separated list of owner email addresses' )
     .option( '--template <template>', 'Permission set template name' )
     .option( '--description <description>', 'Custom description for the access grant' )
     .option( '--session-duration <duration>', 'Session duration (e.g., PT1H, PT8H)', 'PT1H' )
