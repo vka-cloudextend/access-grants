@@ -86,15 +86,10 @@ export class AzureClient {
      */
     async listSecurityGroups( filter?: string ): Promise<AzureGroup[]> {
         try {
-            let query = this.graphClient
+            const query = this.graphClient
                 .api( '/groups' )
                 .select( 'id,displayName,description,groupTypes,securityEnabled,mailEnabled' )
                 .filter( 'securityEnabled eq true' );
-
-            // Add additional filter if provided
-            if ( filter ) {
-                query = query.filter( `securityEnabled eq true and (contains(displayName,'${filter}') or contains(description,'${filter}'))` );
-            }
 
             const response = await query.get();
             const groups: GraphGroup[] = response.value || [];
@@ -104,6 +99,16 @@ export class AzureClient {
 
             for ( const group of groups ) {
                 if ( !group.id || !group.displayName ) continue;
+
+                // Apply client-side filtering if provided
+                if ( filter ) {
+                    const displayNameMatch = group.displayName.toLowerCase().includes( filter.toLowerCase() );
+                    const descriptionMatch = group.description?.toLowerCase().includes( filter.toLowerCase() ) || false;
+
+                    if ( !displayNameMatch && !descriptionMatch ) {
+                        continue; // Skip this group if it doesn't match the filter
+                    }
+                }
 
                 // Get member count for each group
                 const memberCount = await this.getGroupMemberCount( group.id );
@@ -184,6 +189,40 @@ export class AzureClient {
         } else {
             // Default to Security for security-enabled groups
             return 'Security';
+        }
+    }
+
+    /**
+     * Resolve Service Principal ID from either Service Principal ID or Application ID
+     */
+    private async resolveServicePrincipalId( enterpriseAppId: string ): Promise<string | null> {
+        try {
+            // First try as Service Principal ID
+            try {
+                await this.graphClient
+                    .api( `/servicePrincipals/${enterpriseAppId}` )
+                    .select( 'id' )
+                    .get();
+                return enterpriseAppId; // It's already a Service Principal ID
+            } catch {
+                // Not a Service Principal ID, try as Application ID
+            }
+
+            // Try to find by Application ID
+            const response = await this.graphClient
+                .api( '/servicePrincipals' )
+                .filter( `appId eq '${enterpriseAppId}'` )
+                .select( 'id' )
+                .get();
+
+            if ( response.value && response.value.length > 0 ) {
+                return response.value[ 0 ].id; // Return the Service Principal ID
+            }
+
+            return null;
+
+        } catch {
+            return null;
         }
     }
 
@@ -716,6 +755,29 @@ export class AzureClient {
                 return result;
             }
 
+            // Retry logic for newly created groups (Azure AD propagation delay)
+            let groupExists = false;
+            let retryCount = 0;
+            const maxRetries = 3;
+            const retryDelay = 2000; // 2 seconds
+
+            while ( !groupExists && retryCount < maxRetries ) {
+                groupExists = await this.groupExists( groupId );
+
+                if ( !groupExists ) {
+                    retryCount++;
+                    if ( retryCount < maxRetries ) {
+                        console.log( `Group ${groupId} not yet available for owner addition, retrying in ${retryDelay}ms... (attempt ${retryCount}/${maxRetries})` );
+                        await new Promise( resolve => setTimeout( resolve, retryDelay ) );
+                    }
+                }
+            }
+
+            if ( !groupExists ) {
+                result.errors.push( 'Group does not exist or is not accessible after retries' );
+                return result;
+            }
+
             // Add user as owner
             const ownerData = {
                 '@odata.id': `https://graph.microsoft.com/v1.0/users/${userValidation.user.id}`
@@ -802,6 +864,29 @@ export class AzureClient {
             const userValidation = await this.validateUser( userIdOrEmail );
             if ( !userValidation.isValid || !userValidation.user ) {
                 result.errors.push( `User validation failed: ${userValidation.errors.join( ', ' )}` );
+                return result;
+            }
+
+            // Retry logic for newly created groups (Azure AD propagation delay)
+            let groupExists = false;
+            let retryCount = 0;
+            const maxRetries = 3;
+            const retryDelay = 2000; // 2 seconds
+
+            while ( !groupExists && retryCount < maxRetries ) {
+                groupExists = await this.groupExists( groupId );
+
+                if ( !groupExists ) {
+                    retryCount++;
+                    if ( retryCount < maxRetries ) {
+                        console.log( `Group ${groupId} not yet available for member addition, retrying in ${retryDelay}ms... (attempt ${retryCount}/${maxRetries})` );
+                        await new Promise( resolve => setTimeout( resolve, retryDelay ) );
+                    }
+                }
+            }
+
+            if ( !groupExists ) {
+                result.errors.push( 'Group does not exist or is not accessible after retries' );
                 return result;
             }
 
@@ -914,17 +999,42 @@ export class AzureClient {
         };
 
         try {
-            // Validate group exists first
-            const groupExists = await this.groupExists( groupId );
+            // Resolve the actual Service Principal ID (in case we were given an Application ID)
+            const servicePrincipalId = await this.resolveServicePrincipalId( enterpriseAppId );
+            if ( !servicePrincipalId ) {
+                result.errors.push( `Enterprise application ${enterpriseAppId} does not exist or is not accessible. Please check the AZURE_ENTERPRISE_APP_ID configuration.` );
+                return result;
+            }
+
+            console.log( `Using Service Principal ID: ${servicePrincipalId}` );
+
+            // Retry logic for newly created groups (Azure AD propagation delay)
+            let groupExists = false;
+            let retryCount = 0;
+            const maxRetries = 3;
+            const retryDelay = 2000; // 2 seconds
+
+            while ( !groupExists && retryCount < maxRetries ) {
+                groupExists = await this.groupExists( groupId );
+
+                if ( !groupExists ) {
+                    retryCount++;
+                    if ( retryCount < maxRetries ) {
+                        console.log( `Group ${groupId} not yet available, retrying in ${retryDelay}ms... (attempt ${retryCount}/${maxRetries})` );
+                        await new Promise( resolve => setTimeout( resolve, retryDelay ) );
+                    }
+                }
+            }
+
             if ( !groupExists ) {
-                result.errors.push( 'Group does not exist or is not accessible' );
+                result.errors.push( 'Group does not exist or is not accessible after retries' );
                 return result;
             }
 
             // Get default role if not specified
             let appRoleId = roleId;
             if ( !appRoleId ) {
-                const defaultRole = await this.getDefaultAppRole( enterpriseAppId );
+                const defaultRole = await this.getDefaultAppRole( servicePrincipalId );
                 if ( !defaultRole ) {
                     result.errors.push( 'No default role found for enterprise application' );
                     return result;
@@ -935,7 +1045,7 @@ export class AzureClient {
             // Create the app role assignment
             const assignmentData = {
                 principalId: groupId,
-                resourceId: enterpriseAppId,
+                resourceId: servicePrincipalId, // Use the resolved Service Principal ID
                 appRoleId: appRoleId
             };
 
@@ -1115,21 +1225,45 @@ export class AzureClient {
      */
     private async getDefaultAppRole( enterpriseAppId: string ): Promise<{ id: string; displayName: string } | null> {
         try {
+            console.log( `Getting app roles for service principal ${enterpriseAppId}...` );
             const response = await this.graphClient
                 .api( `/servicePrincipals/${enterpriseAppId}` )
                 .select( 'appRoles' )
                 .get();
 
             const appRoles = response.appRoles || [];
+            console.log( `Found ${appRoles.length} app roles:`, appRoles.map( ( r: any ) => ( { id: r.id, displayName: r.displayName, value: r.value } ) ) );
 
-            // Look for default role (usually has value "User" or is the first role)
-            const defaultRole = appRoles.find( ( role: any ) =>
-                role.value === 'User' || role.isDefault === true
-            ) || appRoles[ 0 ];
+            // Look for default role in order of preference:
+            // 1. Role with value "User"
+            // 2. Role marked as default
+            // 3. First available role
+            // 4. Use the default "User" role ID (00000000-0000-0000-0000-000000000000)
 
-            return defaultRole ? { id: defaultRole.id, displayName: defaultRole.displayName } : null;
-        } catch {
-            return null;
+            let defaultRole = appRoles.find( ( role: any ) => role.value === 'User' );
+
+            if ( !defaultRole ) {
+                defaultRole = appRoles.find( ( role: any ) => role.isDefault === true );
+            }
+
+            if ( !defaultRole && appRoles.length > 0 ) {
+                defaultRole = appRoles[ 0 ];
+            }
+
+            if ( defaultRole ) {
+                console.log( `Using app role: ${defaultRole.displayName} (${defaultRole.id})` );
+                return { id: defaultRole.id, displayName: defaultRole.displayName };
+            }
+
+            // Fallback: Use the standard "User" role ID that's available for most enterprise apps
+            console.log( 'No specific app roles found, using default User role' );
+            return { id: '00000000-0000-0000-0000-000000000000', displayName: 'User' };
+
+        } catch ( error ) {
+            console.warn( `Failed to get app roles for service principal ${enterpriseAppId}: ${error instanceof Error ? error.message : 'Unknown error'}` );
+            // Fallback: Use the standard "User" role ID
+            console.log( 'Using fallback default User role due to error' );
+            return { id: '00000000-0000-0000-0000-000000000000', displayName: 'User' };
         }
     }
 
